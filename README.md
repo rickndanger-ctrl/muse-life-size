@@ -24,9 +24,11 @@ identity across rebuilds so macOS can retain the approval. Requires an Apple Sil
 Mac running macOS 15.2 or later. This is a normal foreground app, with no background
 agent or startup service.
 
-Validation: stable signing retained capture permission after a rebuild. The actual
-muted Muse avatar appeared in native full screen, but the picture subsequently
-went black; Escape quit the viewer. Replaced the Space transition with a borderless
-window covering the current screen. Muse later reported Voice call ended. Sustained
-live capture with the revised presentation and source-call preservation still need
-verification with a reopened call.
+Validation (2026-11-24): stable signing retained capture permission after a rebuild.
+The revised viewer displayed the actual muted avatar at 1920 × 1080 on the current
+desktop. Separate screenshots showed the avatar blinking and moving, with the
+picture still visible after the initial frame. Capture ran for 16 seconds before
+Escape quit the viewer; Muse still reported Voice call is live afterward. Microphone
+and speaker controls were not changed. This was a short live smoke test, not a
+long-duration call test. The earlier macOS Space transition showed a black picture,
+so the viewer now covers the existing desktop instead.
