@@ -17,10 +17,13 @@ there is no recording, web server, phone connection, microphone, camera, or audi
 capture. Closing the viewer ends its window capture. The original window's
 resolution determines sharpness when enlarged.
 
-Build with `./build.sh` using Xcode command-line tools. Requires an Apple Silicon
+Build with `./build.sh` using Xcode command-line tools and a stable installed
+Apple Development signing identity (or set `MUSE_CODESIGN_IDENTITY`). Keep that
+identity across rebuilds so macOS can retain the approval. Requires an Apple Silicon
 Mac running macOS 15.2 or later. This is a normal foreground app, with no background
 agent or startup service.
 
-Validation: native window-picker flow did not deliver a capture. Replaced with
-auto-detection of only the Muse avatar via ScreenCaptureKit. Live capture and
-Escape verification are pending macOS Screen Recording permission.
+Validation: the signed app launches and ScreenCaptureKit successfully lists Muse
+windows after replacing the obsolete ad-hoc-signed permission entry in System
+Settings. The live avatar was closed at retest (Focus video window disabled).
+Live capture, native full screen, and Escape verification remain pending a new call.
