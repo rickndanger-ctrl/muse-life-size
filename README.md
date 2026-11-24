@@ -2,7 +2,7 @@
 
 A small native Mac viewer for the existing Muse avatar call.
 
-1. Open **Muse Fullscreen.app** once. It keeps a **Muse** shortcut in the menu bar.
+1. Open **Muse Fullscreen.app** once. It keeps an **Enlarge Muse** shortcut on the right side of the menu bar.
 2. Start your call in Muse, then click the menu-bar shortcut to enlarge it.
    The shortcut stays available while this app runs; it dims when no visible avatar is found.
 3. Click the enlarged microphone button to unmute yourself and the speaker button
@@ -33,12 +33,10 @@ identity across builds to retain macOS approval. Requires an Apple Silicon Mac
 running macOS 15.2 or later. No login item or background agent is installed; this
 is a user-launched GUI app which remains running for its menu-bar shortcut.
 
-Live validation on 2026-11-24: captured the real muted Muse avatar, displayed moving
-frames, and logged 90 rendered frames. Enlarged speaker button changed the actual
-Muse label from Unmute speaker to Mute speaker and back; microphone remained muted.
-Tested the transparent/black background setting. Escape hid the viewer while the
-process stayed running. A subsequent UI inspection reopened it through macOS's
-app-reopen callback. End-call and microphone transmission were not exercised.
-The final hidden-avatar menu fallback and physical menu-bar icon click still need
-live verification. The last call timed out during testing. Native macOS full-screen
-Spaces previously produced a black picture, so this viewer stays on the current desktop.
+Live validation on 2026-11-24 displayed the real avatar at 1920 × 1080 and logged
+90 rendered frames. The enlarged microphone button changed Muse’s control label
+from Unmute to Mute and back. The speaker button was verified both ways in the
+earlier live test. Both controls were restored to mute. The end-call button and
+spoken audio were not exercised. Escape hides the viewer while its menu-bar
+shortcut stays running. Native macOS full-screen Spaces previously produced a
+black picture, so this viewer stays on the current desktop.

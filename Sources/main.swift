@@ -79,6 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var updateTimer: Timer?
     private var discoveryRunning = false
     private var avatarAvailable = false
+    private var sourceWindowID: CGWindowID?
+    private var lastFrameTime: TimeInterval = 0
     private var sourceFrame = CGRect.zero
     private var currentControls: MuseControls.Snapshot?
     private let toolbar = NSStackView()
@@ -225,14 +227,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         layoutControls()
         guard !discoveryRunning, CGPreflightScreenCaptureAccess() else { return }
         discoveryRunning = true
+        let discoveryGeneration = generation
         Task { @MainActor in
             defer { discoveryRunning = false }
             guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return }
+            guard generation == discoveryGeneration else { return }
             let candidates = content.windows.filter(isAvatar)
             avatarAvailable = candidates.count == 1
             statusItem.button?.appearsDisabled = !avatarAvailable && !expanded
-            if let source = candidates.first, candidates.count == 1 { sourceFrame = source.frame }
-            if expanded && !avatarAvailable { hideViewer() }
+            guard expanded, let sourceWindowID else { return }
+            if let source = candidates.first(where: { $0.windowID == sourceWindowID }) {
+                sourceFrame = source.frame
+            } else if ProcessInfo.processInfo.systemUptime - lastFrameTime >= 4 {
+                // A focus handoff can briefly hide the floating window while
+                // its selected-window stream is still delivering real frames.
+                diagnostic("avatar no longer visible and capture has stopped delivering frames")
+                hideViewer()
+            }
         }
     }
 
@@ -324,6 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         firstFrameTimeout?.cancel()
         let old = stream
         stream = nil
+        sourceWindowID = nil
         if let old { Task { try? await old.stopCapture() } }
         picture.display.flushAndRemoveImage()
         starting = false
@@ -373,6 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     }
                     if let source = candidates.first {
                         sourceFrame = source.frame
+                        sourceWindowID = source.windowID
                         diagnostic("capturing only Muse avatar window \(source.windowID) after \(attempt + 1) checks")
                         starting = false
                         start(filter: SCContentFilter(desktopIndependentWindow: source))
@@ -449,6 +462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             if self.picture.display.status == .failed { self.picture.display.flush() }
             self.picture.display.enqueue(sampleBuffer)
             self.frames += 1
+            self.lastFrameTime = ProcessInfo.processInfo.systemUptime
             if self.frames == 1 {
                 self.firstFrameTimeout?.cancel()
                 self.starting = false
@@ -480,6 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         firstFrameTimeout?.cancel()
         let old = stream
         stream = nil
+        sourceWindowID = nil
         if let old { Task { try? await old.stopCapture() } }
         picture.display.flushAndRemoveImage()
         starting = false
