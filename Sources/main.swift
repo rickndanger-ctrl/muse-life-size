@@ -21,7 +21,7 @@ func diagnostic(_ message: String) {
     try? handle.write(contentsOf: Data("\(Date().ISO8601Format()) \(message)\n".utf8))
 }
 
-final class ViewerWindow: NSWindow {
+final class ViewerWindow: NSPanel {
     var onEscape: (() -> Void)?
     override var canBecomeKey: Bool { true }
     override func keyDown(with event: NSEvent) {
@@ -61,6 +61,7 @@ final class PictureView: NSView {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                          SCStreamOutput, SCStreamDelegate {
+    private let setupStyle: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .nonactivatingPanel]
     private var window: ViewerWindow!
     private let picture = PictureView(frame: .zero)
     private let startPanel = NSStackView()
@@ -116,10 +117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         statusItem.button?.toolTip = "Open Muse full screen. Right-click for options."
 
         window = ViewerWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 290),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              styleMask: setupStyle,
                               backing: .buffered, defer: false)
         window.title = "Muse Fullscreen"
         window.delegate = self
+        window.hidesOnDeactivate = false
         window.onEscape = { [weak self] in self?.hideViewer() }
         window.collectionBehavior = [.fullScreenPrimary]
         window.backgroundColor = .black
@@ -469,8 +471,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 self.startPanel.isHidden = true
                 self.toolbar.isHidden = false
                 self.window.title = "Muse Fullscreen — live"
-                self.window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
                 self.fillCurrentScreen()
                 self.refresh()
                 diagnostic("first live frame displayed")
@@ -514,15 +514,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         expanded = true
         // Keep Muse on the same desktop. A separate full-screen Space can hide
         // its floating avatar and leave the captured picture black.
-        window.styleMask = [.borderless]
+        // Preserve the nonactivating style from window creation so Muse can
+        // keep rendering when the viewer comes to the front or is clicked.
+        window.styleMask = [.borderless, .nonactivatingPanel]
         window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
-        // Keep the menu bar accessible while making the portrait screen-height.
-        NSApp.presentationOptions = [.autoHideDock]
         let topInset = screen.frame.maxY - screen.visibleFrame.maxY
         var frame = screen.frame
         frame.size.height -= topInset
         window.setFrame(frame, display: true)
         applyBackground()
+        window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
         diagnostic("filled current screen; \(Int(screen.frame.width))x\(Int(screen.frame.height))")
     }
@@ -531,9 +532,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         guard expanded else { return }
         expanded = false
         applyBackground()
-        NSApp.presentationOptions = []
         window.level = .normal
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.styleMask = setupStyle
         window.setFrame(originalFrame, display: true)
     }
 
