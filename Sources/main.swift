@@ -57,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var generation = 0
     private var firstFrameTimeout: DispatchWorkItem?
     private var starting = false
+    private var expanded = false
+    private var originalFrame = NSRect.zero
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let appMenu = NSMenu()
@@ -221,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 self.window.title = "Muse Fullscreen — live"
                 self.window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
-                if !self.window.styleMask.contains(.fullScreen) { self.window.toggleFullScreen(nil) }
+                self.fillCurrentScreen()
                 diagnostic("first live frame displayed")
             } else if self.frames == 90 {
                 diagnostic("90 live frames displayed; renderer status \(self.picture.display.status.rawValue)")
@@ -250,10 +252,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         startPanel.isHidden = false
         message.stringValue = text
         window.title = "Muse Fullscreen"
-        if window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+        restoreWindow()
     }
 
-    func windowDidEnterFullScreen(_ notification: Notification) { diagnostic("native full screen entered") }
+    private func fillCurrentScreen() {
+        guard !expanded, let screen = window.screen ?? NSScreen.main else { return }
+        originalFrame = window.frame
+        expanded = true
+        // Keep Muse on the same desktop. A separate full-screen Space can hide
+        // its floating avatar and leave the captured picture black.
+        window.styleMask = [.borderless]
+        window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+        NSApp.presentationOptions = [.autoHideDock, .autoHideMenuBar]
+        window.setFrame(screen.frame, display: true)
+        window.makeKeyAndOrderFront(nil)
+        diagnostic("filled current screen; \(Int(screen.frame.width))x\(Int(screen.frame.height))")
+    }
+
+    private func restoreWindow() {
+        guard expanded else { return }
+        expanded = false
+        NSApp.presentationOptions = []
+        window.level = .normal
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setFrame(originalFrame, display: true)
+    }
+
     func windowWillClose(_ notification: Notification) { NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ notification: Notification) {
