@@ -96,6 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         showItem.target = self
         let controlsItem = applicationMenu.addItem(withTitle: "Enable call controls…", action: #selector(requestControls), keyEquivalent: "")
         controlsItem.target = self
+        let backgroundItem = applicationMenu.addItem(withTitle: "Transparent background", action: #selector(toggleMenuBackground), keyEquivalent: "")
+        backgroundItem.target = self
+        backgroundItem.state = transparent ? .on : .off
         applicationMenu.addItem(.separator())
         applicationMenu.addItem(withTitle: "Quit Muse Fullscreen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         applicationItem.submenu = applicationMenu
@@ -196,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     @objc private func statusClicked() {
+        diagnostic("menu-bar shortcut clicked")
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
             let open = menu.addItem(withTitle: expanded ? "Return to desktop" : "Open full screen", action: #selector(toggleViewer), keyEquivalent: "")
@@ -212,7 +216,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     @objc private func toggleViewer() {
         if expanded { hideViewer(); return }
-        callControls.raiseAvatar()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         chooseWindow()
@@ -298,7 +301,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     @objc private func toggleBackground(_ sender: NSButton) {
         transparent = sender.state == .on
+        saveBackground()
+    }
+    @objc private func toggleMenuBackground(_ sender: NSMenuItem) {
+        transparent.toggle()
+        saveBackground()
+    }
+    private func saveBackground() {
         UserDefaults.standard.set(transparent, forKey: "transparent")
+        NSApp.mainMenu?.items.first?.submenu?.item(withTitle: "Transparent background")?.state = transparent ? .on : .off
+        (toolbar.arrangedSubviews.first(where: { ($0 as? NSButton)?.title == "Transparent background" }) as? NSButton)?.state = transparent ? .on : .off
         applyBackground()
     }
     private func applyBackground() {
@@ -339,11 +351,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             return
         }
         starting = true
+        generation += 1
+        let selectionGeneration = generation
         choose.isEnabled = false
         message.stringValue = "Finding the Muse avatar…"
+        callControls.raiseAvatar()
         Task { @MainActor in
             do {
+                // Let Muse's own Show Video action finish before enumerating.
+                try await Task.sleep(nanoseconds: 150_000_000)
+                guard generation == selectionGeneration else { return }
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                guard generation == selectionGeneration else { return }
                 let museWindows = content.windows.filter { $0.owningApplication?.bundleIdentifier == "com.meta.endo" }
                 // The chat has a title. The call is an untitled, portrait floating window.
                 // Require a single exact candidate rather than choosing any other window.
@@ -364,6 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 diagnostic("capturing only Muse avatar window \(source.windowID)")
                 start(filter: SCContentFilter(desktopIndependentWindow: source))
             } catch {
+                guard generation == selectionGeneration else { return }
                 diagnostic("window lookup failed: \((error as NSError).code)")
                 showError("macOS could not access the Muse window. Check Screen Recording permission for Muse Fullscreen.")
             }

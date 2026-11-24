@@ -68,8 +68,27 @@ final class MuseControls {
     }
 
     func raiseAvatar() {
-        guard let current = snapshot() else { return }
-        _ = AXUIElementPerformAction(current.window, kAXRaiseAction as CFString)
+        if let current = snapshot() {
+            _ = AXUIElementPerformAction(current.window, kAXRaiseAction as CFString)
+            return
+        }
+        // Muse may keep a voice call live with its portrait hidden. Use its
+        // own named menu command to show it, without starting another call.
+        guard trusted, let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.meta.endo" }) else { return }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.25)
+        guard let bar = attribute(root, kAXMenuBarAttribute), CFGetTypeID(bar) == AXUIElementGetTypeID() else { return }
+        var pending = [bar as! AXUIElement]
+        var examined = 0
+        while let item = pending.popLast(), examined < 200 {
+            examined += 1
+            if attribute(item, kAXTitleAttribute) as? String == "Focus video window",
+               attribute(item, kAXEnabledAttribute) as? Bool == true {
+                _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
+                return
+            }
+            if let children = attribute(item, kAXChildrenAttribute) as? [AXUIElement] { pending.append(contentsOf: children) }
+        }
     }
 
     // Resolve each click afresh; never send a coordinate click to another app.

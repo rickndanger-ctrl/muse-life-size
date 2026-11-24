@@ -1,34 +1,44 @@
 # Muse Fullscreen
 
-A small native Mac app that displays the exact live Muse avatar window full screen.
+A small native Mac viewer for the existing Muse avatar call.
 
-1. Open your voice call in Muse and show its floating avatar (Window > Focus video window).
-2. Open **Muse Fullscreen.app** and click **Make Muse full screen**.
-3. On first use, allow Muse Fullscreen in macOS Screen Recording settings.
-   Then click its button again; it finds the floating avatar automatically.
+1. Open **Muse Fullscreen.app** once. It keeps a **Muse** shortcut in the menu bar.
+2. Start your call in Muse, then click the menu-bar shortcut to enlarge it.
+   The shortcut stays available while this app runs; it dims when no visible avatar is found.
+3. Click the enlarged microphone button to unmute yourself and the speaker button
+   to hear Muse. The red phone button ends the original call when clicked.
+4. **Escape** or **Back** hides the enlarged view and leaves the shortcut running.
+   Right-click the shortcut for options and Quit.
 
-The app fills the current screen after it receives a real video frame, without
-switching macOS Spaces. It preserves
-the portrait proportions, with black space at the sides. Escape closes the viewer;
-the original Muse call and its mute settings remain in Muse. Use the original
-Muse window to change call controls.
+**Transparent background** reveals the desktop around the portrait. Uncheck it
+for black sides. Muse's own white portrait backdrop remains part of the original
+picture. The viewer fills the current screen below the menu bar without switching
+macOS Spaces. It keeps the original proportions; source resolution limits sharpness.
 
-Only a single untitled portrait window belonging to Muse is accepted. The app displays it locally;
-there is no recording, web server, phone connection, microphone, camera, or audio
-capture. Closing the viewer ends its window capture. The original window's
-resolution determines sharpness when enlarged.
+Screen Recording permission is required to display the avatar. Accessibility
+permission is required for interactive call buttons. Use **Enable call controls…**
+to open setup. The viewer presses only the named controls in Muse's identified
+picture-in-picture window. It can use Muse's **Focus video window** menu command
+when you request full screen; it does not start calls. If the avatar remains hidden,
+show it in Muse with **Window → Focus video window** and retry.
+
+There is no recording, web server, phone connection, camera, microphone capture,
+or duplicate audio stream. Audio stays in Muse. Microphone/speaker states change
+only on explicit control clicks. Hiding the viewer stops capture. When the source
+avatar disappears, the enlarged view returns to the desktop.
 
 Build with `./build.sh` using Xcode command-line tools and a stable installed
 Apple Development signing identity (or set `MUSE_CODESIGN_IDENTITY`). Keep that
-identity across rebuilds so macOS can retain the approval. Requires an Apple Silicon
-Mac running macOS 15.2 or later. This is a normal foreground app, with no background
-agent or startup service.
+identity across builds to retain macOS approval. Requires an Apple Silicon Mac
+running macOS 15.2 or later. No login item or background agent is installed; this
+is a user-launched GUI app which remains running for its menu-bar shortcut.
 
-Validation (2026-11-24): stable signing retained capture permission after a rebuild.
-The revised viewer displayed the actual muted avatar at 1920 × 1080 on the current
-desktop. Separate screenshots showed the avatar blinking and moving, with the
-picture still visible after the initial frame. Capture ran for 16 seconds before
-Escape quit the viewer; Muse still reported Voice call is live afterward. Microphone
-and speaker controls were not changed. This was a short live smoke test, not a
-long-duration call test. The earlier macOS Space transition showed a black picture,
-so the viewer now covers the existing desktop instead.
+Live validation on 2026-11-24: captured the real muted Muse avatar, displayed moving
+frames, and logged 90 rendered frames. Enlarged speaker button changed the actual
+Muse label from Unmute speaker to Mute speaker and back; microphone remained muted.
+Tested the transparent/black background setting. Escape hid the viewer while the
+process stayed running. A subsequent UI inspection reopened it through macOS's
+app-reopen callback. End-call and microphone transmission were not exercised.
+The final hidden-avatar menu fallback and physical menu-bar icon click still need
+live verification. The last call timed out during testing. Native macOS full-screen
+Spaces previously produced a black picture, so this viewer stays on the current desktop.
