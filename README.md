@@ -33,8 +33,10 @@ identity across builds to retain macOS approval. Requires an Apple Silicon Mac
 running macOS 15.2 or later. No login item or background agent is installed; this
 is a user-launched GUI app which remains running for its menu-bar shortcut.
 
-Live validation on 2026-11-24 displayed the real avatar at 1920 × 1080 and logged
-90 rendered frames. The enlarged microphone button changed Muse’s control label
+Live validation on 2026-11-24 used the **Enlarge Muse** menu-bar shortcut to
+display the real avatar at 1920 × 1080 and logged 90 rendered frames. The viewer
+can appear in front while Muse keeps focus and renders the source video. The
+enlarged microphone button changed Muse’s control label
 from Unmute to Mute and back. The speaker button was verified both ways in the
 earlier live test. Both controls were restored to mute. The end-call button and
 spoken audio were not exercised. Escape hides the viewer while its menu-bar
