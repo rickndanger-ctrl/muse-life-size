@@ -92,6 +92,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let appMenu = NSMenu()
         let applicationItem = NSMenuItem()
         let applicationMenu = NSMenu()
+        let showItem = applicationMenu.addItem(withTitle: "Open full screen", action: #selector(toggleViewer), keyEquivalent: "f")
+        showItem.target = self
+        let controlsItem = applicationMenu.addItem(withTitle: "Enable call controls…", action: #selector(requestControls), keyEquivalent: "")
+        controlsItem.target = self
+        applicationMenu.addItem(.separator())
         applicationMenu.addItem(withTitle: "Quit Muse Fullscreen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         applicationItem.submenu = applicationMenu
         appMenu.addItem(applicationItem)
@@ -133,7 +138,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         startPanel.orientation = .vertical
         startPanel.alignment = .centerX
         startPanel.spacing = 20
-        [title, message, choose, hint].forEach { startPanel.addArrangedSubview($0) }
+        let setupControls = NSButton(title: "Enable call controls…", target: self, action: #selector(requestControls))
+        setupControls.bezelStyle = .rounded
+        [title, message, choose, setupControls, hint].forEach { startPanel.addArrangedSubview($0) }
         startPanel.translatesAutoresizingMaskIntoConstraints = false
         picture.addSubview(startPanel)
         configureControls()
