@@ -105,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         appMenu.addItem(applicationItem)
         NSApp.mainMenu = appMenu
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "Muse"
+        statusItem.button?.title = "Enlarge Muse"
         statusItem.button?.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: "Muse full screen")
         statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.target = self
@@ -131,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         message.font = .systemFont(ofSize: 14)
         message.textColor = .lightGray
         message.alignment = .center
-        let hint = NSTextField(labelWithString: "Escape returns to your desktop. Use Muse in the menu bar to reopen.")
+        let hint = NSTextField(labelWithString: "Escape returns to your desktop. Use Enlarge Muse in the menu bar to reopen.")
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = .lightGray
         choose.bezelStyle = .rounded
@@ -216,8 +216,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     @objc private func toggleViewer() {
         if expanded { hideViewer(); return }
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
         chooseWindow()
     }
 
@@ -340,14 +338,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     @objc private func chooseWindow() {
         guard !starting, stream == nil else { return }
-        guard NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == "com.meta.endo" }) else {
-            message.stringValue = "Open a call in Muse first, then try again."
+        guard let muse = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.meta.endo" }) else {
+            showError("Open a call in Muse first, then try again.")
             return
         }
         guard CGPreflightScreenCaptureAccess() else {
             diagnostic("requesting macOS screen-capture permission")
             _ = CGRequestScreenCaptureAccess()
-            message.stringValue = "Allow Muse Fullscreen in macOS Screen Recording settings, then click the button again."
+            showError("Allow Muse Fullscreen in macOS Screen Recording settings, then click the button again.")
             return
         }
         starting = true
@@ -355,33 +353,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let selectionGeneration = generation
         choose.isEnabled = false
         message.stringValue = "Finding the Muse avatar…"
-        callControls.raiseAvatar()
         Task { @MainActor in
             do {
-                // Let Muse's own Show Video action finish before enumerating.
-                try await Task.sleep(nanoseconds: 150_000_000)
-                guard generation == selectionGeneration else { return }
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                guard generation == selectionGeneration else { return }
-                let museWindows = content.windows.filter { $0.owningApplication?.bundleIdentifier == "com.meta.endo" }
-                // The chat has a title. The call is an untitled, portrait floating window.
-                // Require a single exact candidate rather than choosing any other window.
-                let candidates = museWindows.filter(isAvatar)
-                diagnostic("Muse windows: \(museWindows.count); avatar candidates: \(candidates.count)")
-                for source in museWindows {
-                    diagnostic("Muse window untitled=\((source.title ?? "").isEmpty) size=\(Int(source.frame.width))x\(Int(source.frame.height)) layer=\(source.windowLayer) visible=\(source.isOnScreen)")
+                // Keep Muse active until the stream has a real frame. Bringing
+                // the viewer forward too early can hide the floating source.
+                if !muse.isActive {
+                    NSApp.yieldActivation(to: muse)
+                    _ = muse.activate()
                 }
-                starting = false
-                guard candidates.count == 1 else {
-                    showError(candidates.isEmpty
-                        ? "Open Muse’s floating avatar call window, then click the button again."
-                        : "More than one Muse avatar window was found. Leave only your call window open and try again.")
-                    return
+                for attempt in 0..<9 {
+                    if attempt > 0 { try await Task.sleep(for: .milliseconds(250)) }
+                    guard generation == selectionGeneration else { return }
+                    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                    guard generation == selectionGeneration else { return }
+                    let candidates = content.windows.filter(isAvatar)
+                    if candidates.count > 1 {
+                        showError("More than one Muse avatar window was found. Leave only your call window open and try again.")
+                        return
+                    }
+                    if let source = candidates.first {
+                        sourceFrame = source.frame
+                        diagnostic("capturing only Muse avatar window \(source.windowID) after \(attempt + 1) checks")
+                        starting = false
+                        start(filter: SCContentFilter(desktopIndependentWindow: source))
+                        return
+                    }
+                    if attempt == 1 || attempt == 4 { callControls.showAvatar() }
                 }
-                let source = candidates[0]
-                sourceFrame = source.frame
-                diagnostic("capturing only Muse avatar window \(source.windowID)")
-                start(filter: SCContentFilter(desktopIndependentWindow: source))
+                showError("Open Muse’s floating avatar call window, then click Enlarge Muse again.")
             } catch {
                 guard generation == selectionGeneration else { return }
                 diagnostic("window lookup failed: \((error as NSError).code)")
@@ -490,6 +489,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         message.stringValue = text
         window.title = "Muse Fullscreen"
         restoreWindow()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func fillCurrentScreen() {

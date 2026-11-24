@@ -67,11 +67,7 @@ final class MuseControls {
         return Snapshot(window: window, microphone: microphone, speaker: speaker, endCall: endCall)
     }
 
-    func raiseAvatar() {
-        if let current = snapshot() {
-            _ = AXUIElementPerformAction(current.window, kAXRaiseAction as CFString)
-            return
-        }
+    func showAvatar() {
         // Muse may keep a voice call live with its portrait hidden. Use its
         // own named menu command to show it, without starting another call.
         guard trusted, let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.meta.endo" }) else { return }
@@ -88,6 +84,9 @@ final class MuseControls {
                 return
             }
             if let children = attribute(item, kAXChildrenAttribute) as? [AXUIElement] { pending.append(contentsOf: children) }
+        }
+        if let current = snapshot() {
+            _ = AXUIElementPerformAction(current.window, kAXRaiseAction as CFString)
         }
     }
 
