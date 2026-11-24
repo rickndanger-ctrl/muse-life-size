@@ -45,11 +45,11 @@ final class PictureView: NSView {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-                         SCContentSharingPickerObserver, SCStreamOutput, SCStreamDelegate {
+                         SCStreamOutput, SCStreamDelegate {
     private var window: ViewerWindow!
     private let picture = PictureView(frame: .zero)
     private let startPanel = NSStackView()
-    private let message = NSTextField(wrappingLabelWithString: "Choose the small Muse avatar window.\nIt will fill the screen as soon as the live picture arrives.")
+    private let message = NSTextField(wrappingLabelWithString: "Open your Muse call.\nThis app finds the avatar and makes it full screen.")
     private let choose = NSButton(title: "Make Muse full screen", target: nil, action: nil)
     private var stream: SCStream?
     private let captureQueue = DispatchQueue(label: "local.muse.fullscreen.frames", qos: .userInteractive)
@@ -57,7 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var generation = 0
     private var firstFrameTimeout: DispatchWorkItem?
     private var starting = false
-    private var pickerOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let appMenu = NSMenu()
@@ -103,83 +102,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             startPanel.centerYAnchor.constraint(equalTo: picture.centerYAnchor),
             message.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
         ])
-        SCContentSharingPicker.shared.add(self)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         diagnostic("viewer launched; no capture active")
     }
 
     @objc private func chooseWindow() {
-        guard !starting else { return }
+        guard !starting, stream == nil else { return }
         guard NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == "com.meta.endo" }) else {
             message.stringValue = "Open a call in Muse first, then try again."
             return
         }
+        guard CGPreflightScreenCaptureAccess() else {
+            diagnostic("requesting macOS screen-capture permission")
+            _ = CGRequestScreenCaptureAccess()
+            message.stringValue = "Allow Muse Fullscreen in macOS Screen Recording settings, then click the button again."
+            return
+        }
+        starting = true
+        choose.isEnabled = false
+        message.stringValue = "Finding the Muse avatar…"
         Task { @MainActor in
-            // This API returns only content this process may already access. It does
-            // not request general Screen Recording permission or capture a display.
-            if let content = try? await SCShareableContent.currentProcess {
-                let candidates = content.windows.filter(Self.isAvatar)
-                diagnostic("already-authorized avatar windows: \(candidates.count)")
-                if candidates.count == 1 {
-                    self.start(filter: SCContentFilter(desktopIndependentWindow: candidates[0]))
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                let museWindows = content.windows.filter { $0.owningApplication?.bundleIdentifier == "com.meta.endo" }
+                // The chat has a title. The call is an untitled, portrait floating window.
+                // Require a single exact candidate rather than choosing any other window.
+                let candidates = museWindows.filter {
+                    ($0.title ?? "").isEmpty && $0.frame.width >= 100
+                    && $0.frame.height > $0.frame.width * 1.3
+                    && $0.frame.height < $0.frame.width * 2.2
+                }
+                diagnostic("Muse windows: \(museWindows.count); avatar candidates: \(candidates.count)")
+                for source in museWindows {
+                    diagnostic("Muse window untitled=\((source.title ?? "").isEmpty) size=\(Int(source.frame.width))x\(Int(source.frame.height)) layer=\(source.windowLayer)")
+                }
+                starting = false
+                guard candidates.count == 1 else {
+                    showError(candidates.isEmpty
+                        ? "Open Muse’s floating avatar call window, then click the button again."
+                        : "More than one Muse avatar window was found. Leave only your call window open and try again.")
                     return
                 }
+                let source = candidates[0]
+                diagnostic("capturing only Muse avatar window \(source.windowID)")
+                start(filter: SCContentFilter(desktopIndependentWindow: source))
+            } catch {
+                diagnostic("window lookup failed: \((error as NSError).code)")
+                showError("macOS could not access the Muse window. Check Screen Recording permission for Muse Fullscreen.")
             }
-            self.presentPicker()
-        }
-    }
-
-    private static func isAvatar(_ source: SCWindow) -> Bool {
-        source.owningApplication?.bundleIdentifier == "com.meta.endo"
-            && (source.title ?? "").isEmpty
-            && source.frame.width >= 100
-            && source.frame.height > source.frame.width * 1.3
-    }
-
-    private func presentPicker() {
-        var configuration = SCContentSharingPickerConfiguration()
-        configuration.allowedPickerModes = [.singleWindow]
-        configuration.allowsChangingSelectedContent = false
-        configuration.excludedBundleIDs = [Bundle.main.bundleIdentifier!]
-        let picker = SCContentSharingPicker.shared
-        picker.defaultConfiguration = configuration
-        picker.maximumStreamCount = 1
-        picker.isActive = true
-        pickerOpen = true
-        diagnostic("single-window picker presented")
-        picker.present(using: .window)
-    }
-
-    func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
-        DispatchQueue.main.async {
-            self.pickerOpen = false
-            diagnostic("picker cancelled; active capture: \(self.stream != nil)")
-            guard self.stream == nil else { return }
-            self.message.stringValue = "Nothing is being shared. Choose the avatar window when ready."
-        }
-    }
-
-    func contentSharingPickerStartDidFailWithError(_ error: Error) {
-        DispatchQueue.main.async { self.showError("macOS could not open the window picker. Try again.") }
-        diagnostic("picker failed: \((error as NSError).code)")
-    }
-
-    func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for oldStream: SCStream?) {
-        DispatchQueue.main.async {
-            self.pickerOpen = false
-            let selected = filter.includedWindows
-            diagnostic("picker selected \(selected.count) windows; style \(filter.style.rawValue)")
-            for source in selected {
-                diagnostic("selected source app=\(source.owningApplication?.bundleIdentifier ?? "unknown") untitled=\((source.title ?? "").isEmpty) size=\(Int(source.frame.width))x\(Int(source.frame.height)) layer=\(source.windowLayer)")
-            }
-            // Muse's floating call is an untitled portrait window. Never capture the main chat.
-            guard selected.count == 1, let source = selected.first,
-                  Self.isAvatar(source) else {
-                self.showError("Choose the small floating Muse avatar, rather than its chat window.")
-                return
-            }
-            self.start(filter: filter)
         }
     }
 
@@ -286,8 +257,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ notification: Notification) {
         firstFrameTimeout?.cancel()
-        SCContentSharingPicker.shared.remove(self)
-        SCContentSharingPicker.shared.isActive = false
         diagnostic("viewer closed; source call unchanged")
     }
 }
