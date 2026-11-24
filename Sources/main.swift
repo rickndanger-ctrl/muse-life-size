@@ -130,12 +130,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 // Require a single exact candidate rather than choosing any other window.
                 let candidates = museWindows.filter {
                     ($0.title ?? "").isEmpty && $0.frame.width >= 100
-                    && $0.frame.height > $0.frame.width * 1.3
+                    && $0.isOnScreen && $0.windowLayer == 3
+                    && $0.frame.height > $0.frame.width * 1.45
                     && $0.frame.height < $0.frame.width * 2.2
                 }
                 diagnostic("Muse windows: \(museWindows.count); avatar candidates: \(candidates.count)")
                 for source in museWindows {
-                    diagnostic("Muse window untitled=\((source.title ?? "").isEmpty) size=\(Int(source.frame.width))x\(Int(source.frame.height)) layer=\(source.windowLayer)")
+                    diagnostic("Muse window untitled=\((source.title ?? "").isEmpty) size=\(Int(source.frame.width))x\(Int(source.frame.height)) layer=\(source.windowLayer) visible=\(source.isOnScreen)")
                 }
                 starting = false
                 guard candidates.count == 1 else {
