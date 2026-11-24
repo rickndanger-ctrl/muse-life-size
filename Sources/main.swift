@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var generation = 0
     private var firstFrameTimeout: DispatchWorkItem?
     private var starting = false
+    private var pickerOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let appMenu = NSMenu()
@@ -114,19 +115,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             message.stringValue = "Open a call in Muse first, then try again."
             return
         }
+        Task { @MainActor in
+            // This API returns only content this process may already access. It does
+            // not request general Screen Recording permission or capture a display.
+            if let content = try? await SCShareableContent.currentProcess {
+                let candidates = content.windows.filter(Self.isAvatar)
+                diagnostic("already-authorized avatar windows: \(candidates.count)")
+                if candidates.count == 1 {
+                    self.start(filter: SCContentFilter(desktopIndependentWindow: candidates[0]))
+                    return
+                }
+            }
+            self.presentPicker()
+        }
+    }
+
+    private static func isAvatar(_ source: SCWindow) -> Bool {
+        source.owningApplication?.bundleIdentifier == "com.meta.endo"
+            && (source.title ?? "").isEmpty
+            && source.frame.width >= 100
+            && source.frame.height > source.frame.width * 1.3
+    }
+
+    private func presentPicker() {
         var configuration = SCContentSharingPickerConfiguration()
         configuration.allowedPickerModes = [.singleWindow]
         configuration.allowsChangingSelectedContent = false
-        configuration.excludedBundleIDs = Array(Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier).filter { $0 != "com.meta.endo" }))
+        configuration.excludedBundleIDs = [Bundle.main.bundleIdentifier!]
         let picker = SCContentSharingPicker.shared
         picker.defaultConfiguration = configuration
         picker.maximumStreamCount = 1
         picker.isActive = true
+        pickerOpen = true
+        diagnostic("single-window picker presented")
         picker.present(using: .window)
     }
 
     func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
         DispatchQueue.main.async {
+            self.pickerOpen = false
+            diagnostic("picker cancelled; active capture: \(self.stream != nil)")
+            guard self.stream == nil else { return }
             self.message.stringValue = "Nothing is being shared. Choose the avatar window when ready."
         }
     }
@@ -138,13 +167,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for oldStream: SCStream?) {
         DispatchQueue.main.async {
+            self.pickerOpen = false
             let selected = filter.includedWindows
+            diagnostic("picker selected \(selected.count) windows; style \(filter.style.rawValue)")
+            for source in selected {
+                diagnostic("selected source app=\(source.owningApplication?.bundleIdentifier ?? "unknown") untitled=\((source.title ?? "").isEmpty) size=\(Int(source.frame.width))x\(Int(source.frame.height)) layer=\(source.windowLayer)")
+            }
             // Muse's floating call is an untitled portrait window. Never capture the main chat.
             guard selected.count == 1, let source = selected.first,
-                  source.owningApplication?.bundleIdentifier == "com.meta.endo",
-                  (source.title ?? "").isEmpty,
-                  source.frame.width >= 100,
-                  source.frame.height > source.frame.width * 1.3 else {
+                  Self.isAvatar(source) else {
                 self.showError("Choose the small floating Muse avatar, rather than its chat window.")
                 return
             }
@@ -235,6 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     private func showError(_ text: String) {
+        diagnostic("viewer error: \(text)")
         generation += 1
         firstFrameTimeout?.cancel()
         let old = stream
