@@ -451,6 +451,10 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 stream = capture
                 started = uptime
                 diagnostic("capturing only Muse's \(call.large ? "large avatar" : "small call panel") window \(source.windowID); video only; \(config.width)x\(config.height)")
+                if !call.large {
+                    func r(_ f: CGRect?) -> String { f.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "-" }
+                    diagnostic("small panel window \(r(call.frame)); buttons \(r(call.speaker?.frame)) \(r(call.microphone?.frame)) \(r(call.endCall?.frame)); picture \(r(call.card))")
+                }
             } catch {
                 diagnostic("capture failed: \((error as NSError).code)")
             }

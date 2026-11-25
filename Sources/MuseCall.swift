@@ -80,15 +80,21 @@ final class MuseCall {
             }
         }
         if large == nil {
-            // The small panel names no picture element. Its picture starts 8
-            // points in from the panel's top-left corner and ends 8 points right
-            // of the end-call control and just under the controls.
+            // The small panel names no picture element, and its window is wider
+            // than what it draws (300 points across for a 144-point panel), so
+            // never measure from the window's corner. Muse centres the call
+            // buttons under the picture: take the picture's middle from the
+            // buttons. Measured on Mini 2 (2026-11-24, 1x display): the white
+            // card is 134 points wide, its top 198 points above the buttons'
+            // centre line, and it has the large avatar's shape (332 x 568).
             let controls = [result.microphone, result.speaker, result.endCall].compactMap { $0?.frame }
-            guard windowFrame.height >= 250, let end = result.endCall?.frame, controls.count == 3 else { return nil }
-            let x = windowFrame.minX + 8
-            // The picture is 144 points wide whether Muse shows three controls or four.
-            let card = CGRect(x: x, y: windowFrame.minY + 8, width: 144, height: end.maxY + 6 - windowFrame.minY - 8)
-            guard windowFrame.contains(card), card.width > 60, card.height > 100 else { return nil }
+            guard controls.count == 3 else { return nil }
+            let left = controls.map(\.midX).min()!, right = controls.map(\.midX).max()!
+            let line = controls.map(\.midY).reduce(0, +) / CGFloat(controls.count)
+            let width: CGFloat = 134
+            let card = CGRect(x: ((left + right) / 2 - width / 2).rounded(), y: (line - 198).rounded(),
+                              width: width, height: (width * 568 / 332).rounded())
+            guard windowFrame.contains(card) else { return nil }
             result.card = card
         } else if !foundCard { return nil }
         return result
