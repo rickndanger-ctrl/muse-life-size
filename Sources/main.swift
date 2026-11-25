@@ -132,7 +132,11 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private let container = ContainerView()
     private let picture = PictureView()
     private let message = NSTextField(wrappingLabelWithString: "")
+    // First-run setup: one button for the next missing step. Screen Recording
+    // shows the picture; Accessibility finds Muse's call window and presses its
+    // buttons. The app needs both before it can show anything.
     private let permission = NSButton(title: "Allow Screen Recording…", target: nil, action: nil)
+    private var askedForScreenRecording = false
     private let microphone = CallButton()
     private let speaker = CallButton()
     private let endCall = CallButton()
@@ -217,11 +221,18 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         container.menu = menu
 
         message.alignment = .center
-        message.textColor = .lightGray
+        message.textColor = NSColor(white: 0.9, alpha: 1)
         message.font = .systemFont(ofSize: 14)
+        // The window is see-through and dark; draw its controls for a dark
+        // background, and make the setup button stand out even while Muse,
+        // not this app, is the active one.
+        container.appearance = NSAppearance(named: .darkAqua)
         permission.bezelStyle = .rounded
+        permission.controlSize = .large
+        permission.bezelColor = .controlAccentColor
+        permission.font = .systemFont(ofSize: 14, weight: .semibold)
         permission.target = self
-        permission.action = #selector(askForScreenRecording)
+        permission.action = #selector(setupStep)
         container.addSubview(picture)
         container.addSubview(message)
         container.addSubview(permission)
@@ -317,7 +328,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         aside.target = self
         aside.state = tuckAvatar ? .on : .off
         if !muse.trusted {
-            menu.addItem(withTitle: "Enable call buttons…", action: #selector(askForAccessibility), keyEquivalent: "").target = self
+            menu.addItem(withTitle: "Allow Accessibility…", action: #selector(askForAccessibility), keyEquivalent: "").target = self
         }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Muse Fullscreen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
@@ -365,10 +376,17 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let live = receiving && picture.hasPicture
         container.layer?.backgroundColor = live ? NSColor.clear.cgColor : NSColor(white: 0.08, alpha: 0.8).cgColor
         message.isHidden = live
-        permission.isHidden = live || CGPreflightScreenCaptureAccess()
+        let screenOK = CGPreflightScreenCaptureAccess(), axOK = muse.trusted
+        permission.isHidden = live || (screenOK && axOK)
         if !live {
-            if !CGPreflightScreenCaptureAccess() {
-                message.stringValue = "Muse Fullscreen needs Screen Recording permission to show the avatar."
+            if !screenOK {
+                message.stringValue = askedForScreenRecording
+                    ? "Step 1 of 2: in System Settings, turn on Muse Fullscreen under Screen Recording. Then reopen the app; macOS only hands over the picture after a restart."
+                    : "Step 1 of 2: allow Screen Recording so Muse Fullscreen can show Muse's call picture. Only Muse's call window is ever captured, and nothing is recorded or sent anywhere."
+                permission.title = askedForScreenRecording ? "Reopen Muse Fullscreen" : "Allow Screen Recording…"
+            } else if !axOK {
+                message.stringValue = "Step 2 of 2: allow Accessibility so Muse Fullscreen can find Muse's call window and press its speaker, microphone and end-call buttons for you."
+                permission.title = "Allow Accessibility…"
             } else if NSRunningApplication.runningApplications(withBundleIdentifier: museBundleID).isEmpty {
                 message.stringValue = "Muse is not open."
             } else {
@@ -525,11 +543,44 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         returnToMuse(after: 0.1)
     }
 
-    @objc private func askForScreenRecording() {
-        diagnostic("requesting macOS screen-capture permission")
-        _ = CGRequestScreenCaptureAccess()
+    @objc private func setupStep() {
+        if !CGPreflightScreenCaptureAccess() {
+            if askedForScreenRecording { relaunch(); return }
+            askedForScreenRecording = true
+            askForScreenRecording()
+        } else if !muse.trusted {
+            askForAccessibility()
+        }
+        layoutContents()
     }
-    @objc private func askForAccessibility() { muse.requestPermission() }
+
+    // macOS shows its own prompt only the first time; after that the request
+    // does nothing, so open the right System Settings page as well.
+    private func askForScreenRecording() {
+        diagnostic("requesting macOS screen-capture permission")
+        if !CGRequestScreenCaptureAccess() {
+            openSettings("Privacy_ScreenCapture")
+        }
+    }
+    @objc private func askForAccessibility() {
+        diagnostic("requesting Accessibility permission")
+        muse.requestPermission()
+        if !muse.trusted { openSettings("Privacy_Accessibility") }
+    }
+    private func openSettings(_ pane: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+    // Start a fresh copy of this app, then quit this one.
+    private func relaunch() {
+        diagnostic("reopening after the Screen Recording change")
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+    }
 }
 
 let app = NSApplication.shared

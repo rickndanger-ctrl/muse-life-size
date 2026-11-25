@@ -10,6 +10,36 @@ picture, so the avatar moves and talks as it does in Muse.
 Not affiliated with or endorsed by Meta. "Muse" is the name of Meta's app; this
 project only reads the call picture Muse already shows on your own Mac.
 
+## Install
+
+You need an Apple Silicon Mac with macOS 15.2 or later, and Muse.
+
+1. Download **Muse-Fullscreen-2.1.zip** from the
+   [latest release](https://github.com/rickndanger-ctrl/muse-life-size/releases/latest).
+   It is signed and notarized by Apple, so it opens without warnings.
+2. Double-click the zip and drag **Muse Fullscreen** into Applications. Open it.
+3. The window walks you through two permissions, one button each:
+   - **Screen Recording** lets it show Muse's call picture. Turn on
+     Muse Fullscreen in the System Settings page that opens, then press
+     **Reopen Muse Fullscreen** (macOS hands over the picture only after a restart).
+   - **Accessibility** lets it find Muse's call window and press Muse's call
+     buttons for you. Turn on Muse Fullscreen in the page that opens.
+4. Start a call in Muse. The avatar appears by itself.
+
+### Sharper picture: Muse's larger video
+
+Muse draws its call video at a size it remembers. If the picture looks soft, give
+Muse its largest size (the same as Muse's own "Make video window larger"), then
+quit Muse with ⌘Q and open it again:
+
+```
+defaults write com.meta.endo endo_voice_call_pip_width -int 330
+```
+
+On one Mac this raised the picture from 182 x 311 to 332 x 568 pixels; on a Retina
+MacBook, from 304 x 552 to 664 x 1136. This is Muse's own setting, so a Muse
+update could change it.
+
 ## Use
 
 1. Open **Muse Fullscreen.app** and start a call in Muse, in either order. The
@@ -56,11 +86,13 @@ controls, finds the picture inside the avatar window, and moves the small avatar
 aside. There is no recording, web server, camera, microphone or audio capture.
 Audio stays in Muse. Nothing ends or starts a call by itself.
 
-## Build
+## Build from source
 
-`./build.sh` needs Xcode command-line tools and an installed Apple Development
-signing identity (or `MUSE_CODESIGN_IDENTITY`). Keep the same identity across
-builds so macOS keeps its approvals. Apple Silicon, macOS 15.2 or later.
+`./build.sh` needs the Xcode command-line tools (`xcode-select --install`) and
+builds `Muse Fullscreen.app` in this folder. It signs with your Apple Development
+or Developer ID certificate if you have one (or `MUSE_CODESIGN_IDENTITY`), and ad
+hoc otherwise. With an ad hoc signature macOS asks for both permissions again
+after every rebuild. `./release.sh` is the maintainer's notarized build.
 Diagnostics (events and frame counts, never images) go to `~/Library/Logs/Muse Fullscreen/viewer.log`, wherever the app is kept.
 
 ## Checked, and not
@@ -72,9 +104,12 @@ microphone button; the small avatar moving aside and back.
 Checked without a call (this build): the window is see-through and frameless;
 OMAC writes no row for it and it stays in place across three page switches.
 
-Not checked yet: the picture in this build, from either source; the crop of the
-small call panel (worked out from one measurement); see-through corners; the
-double-click fill; more than one display; a Retina display.
+Checked on live calls (2.0, 2026-11-24, two Mac minis and a Retina MacBook): the
+large avatar and the small call panel, with the panel's crop placed from Muse's
+call buttons and its corners rounded like Muse's card.
+
+Not checked yet: the double-click fill; more than one display; an Intel Mac
+(not supported by the build).
 
 ## Artwork
 
