@@ -37,6 +37,8 @@ final class PictureView: MTKView, MTKViewDelegate {
         context = CIContext(mtlDevice: device)
         super.init(frame: .zero, device: device)
         framebufferOnly = false
+        clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        (layer as? CAMetalLayer)?.isOpaque = false
         isPaused = true
         enableSetNeedsDisplay = true
         delegate = self
@@ -44,6 +46,7 @@ final class PictureView: MTKView, MTKViewDelegate {
     required init(coder: NSCoder) { fatalError("init(coder:) not used") }
 
     var hasPicture: Bool { image != nil }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }   // clicks go to the window behind the picture
     func show(_ buffer: CVPixelBuffer?) {
         image = buffer.map { CIImage(cvPixelBuffer: $0) }
         if image == nil { pictureRect = .zero }
@@ -55,7 +58,7 @@ final class PictureView: MTKView, MTKViewDelegate {
         let size = drawableSize
         guard size.width >= 1, size.height >= 1, let drawable = currentDrawable,
               let buffer = commands.makeCommandBuffer() else { return }
-        var output = CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size))
+        var output = CIImage(color: .clear).cropped(to: CGRect(origin: .zero, size: size))
         if let image, image.extent.width > 0, image.extent.height > 0 {
             let scale = min(size.width / image.extent.width, size.height / image.extent.height)
             var scaled = image.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale, kCIInputAspectRatioKey: 1.0])
@@ -69,14 +72,20 @@ final class PictureView: MTKView, MTKViewDelegate {
         }
         let destination = CIRenderDestination(width: Int(size.width), height: Int(size.height),
                                               pixelFormat: colorPixelFormat, commandBuffer: buffer) { drawable.texture }
+        destination.alphaMode = .premultiplied
         _ = try? context.startTask(toRender: output, to: destination)
         buffer.present(drawable)
         buffer.commit()
     }
 }
 
-final class ViewerWindow: NSWindow {
+// A free, see-through window with no frame. It is a non-activating panel so a
+// click on it does not take the keyboard from Muse, which would hide Muse's
+// large avatar. Drag it anywhere, resize it from its edges, double-click to
+// fill the screen height.
+final class ViewerWindow: NSPanel {
     var onEscape: (() -> Void)?
+    override var canBecomeKey: Bool { true }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { onEscape?() } else { super.keyDown(with: event) }
     }
@@ -89,10 +98,12 @@ final class CallButton: NSButton {
 
 final class ContainerView: NSView {
     var onLayout: (() -> Void)?
-    var onClick: (() -> Void)?
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override func mouseUp(with event: NSEvent) { onClick?() }
+    var onDoubleClick: (() -> Void)?
     override func layout() { super.layout(); onLayout?() }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { onDoubleClick?() } else { window?.performDrag(with: event) }
+    }
 }
 
 final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate,
@@ -109,7 +120,10 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private let muse = MuseCall()
     private var timer: Timer?
 
+    private let pictureShape = NSSize(width: 332, height: 568)   // Muse's large avatar picture
+    private var unfilledFrame: NSRect?
     private var shown = false
+    private var capturedLarge = true
     private var stream: SCStream?
     private var starting = false
     private var capturedCard = CGSize.zero
@@ -132,7 +146,9 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     private var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
-    private var receiving: Bool { stream != nil && uptime - lastAlive < 2.5 }
+    // Four seconds, so a change between Muse's large avatar and its small
+    // panel shows a held frame instead of a blank.
+    private var receiving: Bool { shown && uptime - lastAlive < 4 }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let mainMenu = NSMenu()
@@ -158,18 +174,26 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         menu.delegate = self
         statusItem.menu = menu
 
-        // An ordinary window: a window manager may move and resize it freely.
-        window = ViewerWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 740),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+        window = ViewerWindow(contentRect: NSRect(x: 0, y: 0, width: 415, height: 710),
+                              styleMask: [.borderless, .resizable, .nonactivatingPanel],
                               backing: .buffered, defer: false)
         window.title = "Muse Fullscreen"
         window.delegate = self
         window.isReleasedWhenClosed = false
-        window.backgroundColor = .black
-        window.contentMinSize = NSSize(width: 160, height: 160)
+        window.isFloatingPanel = false
+        window.hidesOnDeactivate = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.contentAspectRatio = pictureShape
+        window.contentMinSize = NSSize(width: 120, height: 120 * pictureShape.height / pictureShape.width)
         window.onEscape = { [weak self] in self?.hide() }
         window.contentView = container
         window.center()
+        window.setFrameAutosaveName("viewer")
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 22
+        container.menu = menu
 
         message.alignment = .center
         message.textColor = .lightGray
@@ -190,7 +214,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
             container.addSubview(button)
         }
         container.onLayout = { [weak self] in self?.layoutContents() }
-        container.onClick = { [weak self] in self?.returnToMuse(after: 0.1) }
+        container.onDoubleClick = { [weak self] in self?.toggleFill() }
 
         diagnostic("viewer launched")
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
@@ -201,12 +225,12 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     @objc private func show() {
         shown = true
-        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        window.makeKey()
         tick()
         // Opening this app makes it the active one, and Muse then hides its
-        // avatar. Wait long enough for a window manager to place this window,
-        // then hand the keyboard back to Muse.
-        returnToMuse(after: 2.5)
+        // large avatar. Hand the keyboard back to Muse.
+        returnToMuse(after: 0.5)
     }
 
     // Muse shows its large avatar only while Muse is the active app. Called
@@ -231,6 +255,19 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     @objc private func toggle() { shown ? hide() : show() }
+
+    // "Full screen" for a portrait picture: as tall as the screen allows.
+    @objc private func toggleFill() {
+        if let frame = unfilledFrame {
+            unfilledFrame = nil
+            window.setFrame(frame, display: true, animate: true)
+        } else if let area = (window.screen ?? NSScreen.main)?.visibleFrame {
+            unfilledFrame = window.frame
+            let width = min(area.width, area.height * pictureShape.width / pictureShape.height)
+            let height = width * pictureShape.height / pictureShape.width
+            window.setFrame(NSRect(x: area.midX - width / 2, y: area.midY - height / 2, width: width, height: height), display: true, animate: true)
+        }
+    }
     func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
     func windowDidMiniaturize(_ notification: Notification) { tuck() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -248,6 +285,9 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         menu.addItem(withTitle: shown ? "Hide viewer" : "Show viewer", action: #selector(toggle), keyEquivalent: "").target = self
+        if shown {
+            menu.addItem(withTitle: unfilledFrame == nil ? "Fill the screen" : "Back to its own size", action: #selector(toggleFill), keyEquivalent: "").target = self
+        }
         let aside = menu.addItem(withTitle: "Move Muse’s small avatar aside while showing", action: #selector(toggleTuck), keyEquivalent: "")
         aside.target = self
         aside.state = tuckAvatar ? .on : .off
@@ -267,7 +307,11 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
             // The avatar animates in and out, so its size must differ twice running.
             let resized = call.map { capturedCard != .zero && abs($0.card.width - capturedCard.width) > 2 } ?? false
             resizedTicks = resized ? resizedTicks + 1 : 0
-            if let stream, resizedTicks >= 2 {
+            if let stream, let call, call.large != capturedLarge {
+                diagnostic("Muse changed to its \(call.large ? "large avatar" : "small call panel"); following it")
+                resizedTicks = 0
+                stop(stream)
+            } else if let stream, resizedTicks >= 2 {
                 diagnostic("avatar changed size; restarting capture")
                 resizedTicks = 0
                 stop(stream)
@@ -279,7 +323,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         if receiving != wasReceiving {
             wasReceiving = receiving
-            diagnostic(receiving ? "live picture showing" : "picture stopped: avatar not on screen")
+            diagnostic(receiving ? "live picture showing" : "picture stopped: no Muse call picture on screen")
             if !receiving { picture.show(nil) }
         }
         if receiving, ticks % 30 == 0 {
@@ -294,6 +338,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let bounds = container.bounds
         picture.frame = bounds
         let live = receiving && picture.hasPicture
+        container.layer?.backgroundColor = live ? NSColor.clear.cgColor : NSColor(white: 0.08, alpha: 0.8).cgColor
         message.isHidden = live
         permission.isHidden = live || CGPreflightScreenCaptureAccess()
         if !live {
@@ -302,7 +347,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
             } else if NSRunningApplication.runningApplications(withBundleIdentifier: museBundleID).isEmpty {
                 message.stringValue = "Muse is not open."
             } else {
-                message.stringValue = "Waiting for Muse’s avatar.\n\nMuse shows it only during a call, while Muse is the app you are using and its window is open on this page. Click Muse’s window to bring it back."
+                message.stringValue = "Waiting for a Muse call.\n\nThe picture appears here by itself. Drag to move, double-click to fill the screen, Escape to hide."
             }
             let width = max(80, min(bounds.width - 32, 380))
             let height = message.sizeThatFits(NSSize(width: width, height: 400)).height
@@ -340,7 +385,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     // the right screen edge so only its empty margin stays on screen. Put it
     // back whenever this window is not showing the picture.
     private func tuck() {
-        guard let call else { return }
+        guard let call, call.large else { return }
         let edge = NSScreen.screens.map(\.frame.maxX).max() ?? call.frame.maxX
         let aside = edge - 40
         let isAside = abs(call.frame.minX - aside) < 2
@@ -362,32 +407,32 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     // MARK: Capture
 
-    // Accept only one untitled portrait floating window owned by Muse.
-    private func isAvatar(_ source: SCWindow) -> Bool {
-        source.owningApplication?.bundleIdentifier == museBundleID
-        && (source.title ?? "").isEmpty && source.windowLayer == 3 && source.isOnScreen
-        && source.frame.width >= 100
-        && source.frame.height > source.frame.width * 1.45
-        && source.frame.height < source.frame.width * 2.2
+    // Accept only Muse's own call picture: the window Accessibility identifies
+    // as its large avatar or, while that is hidden, its small call panel.
+    // Never a display, never the chat window.
+    private func isCallWindow(_ source: SCWindow, _ call: MuseCall.State) -> Bool {
+        source.owningApplication?.bundleIdentifier == museBundleID && source.windowLayer == 3 && source.isOnScreen
+        && (source.title ?? "").isEmpty == call.large
+        && abs(source.frame.width - call.frame.width) <= 2 && abs(source.frame.height - call.frame.height) <= 2
+        && abs(source.frame.minX - call.frame.minX) <= 4 && abs(source.frame.minY - call.frame.minY) <= 4
     }
 
     private func findAvatar() {
         starting = true
         Task { @MainActor in
             defer { starting = false }
-            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return }
-            let candidates = content.windows.filter(isAvatar)
+            guard let call = muse.state(),
+                  let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return }
+            let candidates = content.windows.filter { isCallWindow($0, call) }
             guard shown, stream == nil, candidates.count == 1, let source = candidates.first else { return }
             let filter = SCContentFilter(desktopIndependentWindow: source)
             let config = SCStreamConfiguration()
-            var crop = CGRect(origin: .zero, size: source.frame.size)
-            capturedCard = .zero
             // Capture only the picture, not the empty margin around it.
-            if let call = muse.state(), abs(call.frame.width - source.frame.width) <= 2, abs(call.frame.height - source.frame.height) <= 2 {
-                crop = call.card.offsetBy(dx: -call.frame.minX, dy: -call.frame.minY)
-                config.sourceRect = crop
-                capturedCard = call.card.size
-            }
+            let crop = call.card.offsetBy(dx: -call.frame.minX, dy: -call.frame.minY)
+            config.sourceRect = crop
+            config.backgroundColor = .clear
+            capturedCard = call.card.size
+            capturedLarge = call.large
             let scale = CGFloat(filter.pointPixelScale)
             config.width = max(2, Int(crop.width * scale))
             config.height = max(2, Int(crop.height * scale))
@@ -406,7 +451,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 guard shown, stream == nil else { try? await capture.stopCapture(); return }
                 stream = capture
                 started = uptime
-                diagnostic("capturing only Muse avatar window \(source.windowID); video only; \(config.width)x\(config.height)")
+                diagnostic("capturing only Muse's \(call.large ? "large avatar" : "small call panel") window \(source.windowID); video only; \(config.width)x\(config.height)")
             } catch {
                 diagnostic("capture failed: \((error as NSError).code)")
             }

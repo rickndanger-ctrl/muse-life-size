@@ -1,40 +1,46 @@
 # Muse Fullscreen
 
-A small native Mac app that shows the Muse call avatar in its own ordinary window,
-as large as that window is. A window manager can tile or resize it like any app.
+A small native Mac app that shows the Muse call avatar in a free, see-through
+window of its own: no frame, no background, any size, anywhere on the screen.
 
 ## Use
 
-1. Start a call in Muse.
-2. Open **Muse Fullscreen.app** on the same desktop (the same OMAC page) as Muse's
-   own window. The picture appears by itself.
+1. Open **Muse Fullscreen.app** and start a call in Muse, in either order. The
+   picture appears by itself.
+2. Drag the picture to move it. Drag an edge to resize it; it keeps its shape.
+   **Double-click** it to fill the screen height, and again to go back.
 3. The three round buttons over the picture press Muse's own speaker, microphone
    and end-call controls.
-4. **Escape** (or the close button) hides the window. **Enlarge Muse** in the menu
-   bar shows it again and holds the options and Quit.
+4. **Escape** (after a click on the picture) hides it. **Enlarge Muse** in the menu
+   bar, or a right-click on the picture, shows it again and holds the options and
+   Quit.
+
+It is not tied to Muse's window or to an OMAC page. OMAC does not manage it, so it
+stays where it is when the page changes.
 
 ## What Muse allows, measured on a live call (2026-11-24)
 
-These are Muse's rules, not this app's. They decide when there is a picture.
+These are Muse's rules, not this app's. They decide how sharp the picture is.
 
-- Muse shows its large avatar only while **Muse is the app you are using** and its
-  own window is open (not minimized). In any other case it swaps to a small panel
-  and the picture here stops. This window then says it is waiting, and resumes by
-  itself, usually within a second, when the avatar returns.
-- Because opening or clicking this app makes it the active one, it hands the
-  keyboard back to Muse: 2.5 seconds after opening, and right after a click in its
-  window. It does that only when Muse's own window is open on this desktop.
-- The avatar window is 442 x 686 points at most (Muse's own "Make video window
-  larger" stops there). The picture inside it is 332 x 568 pixels on a 1x screen.
-  That is the best source there is. This app captures only that picture and
-  enlarges it with a Lanczos filter and light sharpening.
-- The capture keeps running at about 25 frames a second when the avatar window is
+- Muse shows its **large avatar** (332 x 568 pixels of picture inside a 442 x 686
+  window; its own "Make video window larger" stops there) only while Muse is the
+  app you are using and its own window is open. That is the sharp source.
+- In every other case (another app in use, another page, Muse's window minimized)
+  Muse shows a **small call panel** instead, with the same avatar at about
+  144 x 226 pixels. This app follows it, so the picture keeps going, but it is
+  visibly softer when enlarged. Nothing can make Muse draw it larger.
+- A click on this window does not take the keyboard from Muse. Opening the app
+  does, so it hands the keyboard back to Muse half a second later, only when
+  Muse's own window is open on this desktop.
+- The capture keeps running at about 25 frames a second when the source window is
   covered, or slid off the screen edge with 40 points left on screen. It stops when
-  the window is hidden.
+  the window is hidden, and resumes by itself.
+- The white backdrop behind the avatar is part of Muse's picture. Everything
+  around it is see-through.
 
-**Move Muse's small avatar aside while showing** (menu bar, on by default) slides
-Muse's floating avatar to the right screen edge while the picture is showing here,
-and puts it back when this window is hidden, minimized or closed.
+**Move Muse's small avatar aside while showing** (menu, on by default) slides
+Muse's large floating avatar to the right screen edge while the picture is showing
+here, and puts it back when this window is hidden.
 
 ## Permissions
 
@@ -50,13 +56,15 @@ signing identity (or `MUSE_CODESIGN_IDENTITY`). Keep the same identity across
 builds so macOS keeps its approvals. Apple Silicon, macOS 15.2 or later.
 Diagnostics (events and frame counts, never images) go to `.runtime/viewer.log`.
 
-## Checked on a live call, and not
+## Checked, and not
 
-Checked: OMAC enrolled and tiled the window at 930 x 1002 next to Muse with no
-size refusal (four launches); the picture ran for 30 seconds at 20 to 25 frames a
-second; it stopped and resumed across an OMAC page switch; the small avatar moved
-aside and back.
+Checked on a live call (earlier builds, same capture code): about 25 frames a
+second from the large avatar; stop and resume across an OMAC page switch; the
+microphone button; the small avatar moving aside and back.
 
-Not checked: the three buttons in this build (only the owner may change mute or end
-a call); OMAC's fill-the-page key with this window; more than one display; a
-Retina display.
+Checked without a call (this build): the window is see-through and frameless;
+OMAC writes no row for it and it stays in place across three page switches.
+
+Not checked yet: the picture in this build, from either source; the crop of the
+small call panel (worked out from one measurement); see-through corners; the
+double-click fill; more than one display; a Retina display.

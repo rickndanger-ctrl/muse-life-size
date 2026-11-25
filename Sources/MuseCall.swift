@@ -15,7 +15,8 @@ final class MuseCall {
     }
     struct State {
         let window: AXUIElement
-        let frame: CGRect          // the avatar window, screen points, top-left origin
+        let large: Bool            // the large avatar, not the small call panel
+        let frame: CGRect          // that window, screen points, top-left origin
         var card: CGRect           // the picture inside it, same coordinates
         var microphone: Control?
         var speaker: Control?
@@ -46,21 +47,29 @@ final class MuseCall {
         return CGRect(origin: point, size: extent)
     }
 
+    // Muse shows the large avatar ("VoiceCallPictureInPicture") only while Muse
+    // is the active app and its own window is open. Otherwise it shows a small
+    // call panel ("AmbientPanel") with the same avatar and the same controls.
     func state() -> State? {
         guard trusted, let app = NSRunningApplication.runningApplications(withBundleIdentifier: museBundleID).first else { return nil }
         let root = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(root, 0.25)
-        guard let windows = attribute(root, kAXWindowsAttribute) as? [AXUIElement],
-              let window = windows.first(where: { attribute($0, kAXIdentifierAttribute) as? String == "VoiceCallPictureInPicture" }),
-              let windowFrame = frame(window) else { return nil }
-        var result = State(window: window, frame: windowFrame, card: windowFrame)
+        guard let windows = attribute(root, kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+        func find(_ id: String) -> AXUIElement? { windows.first { attribute($0, kAXIdentifierAttribute) as? String == id } }
+        let large = find("VoiceCallPictureInPicture")
+        guard let window = large ?? find("AmbientPanel"), let windowFrame = frame(window) else { return nil }
+        var result = State(window: window, large: large != nil, frame: windowFrame, card: windowFrame)
+        var foundCard = false
+        var controlsLeft = CGFloat.infinity     // includes controls this app has no button for (captions)
         var pending = [window]
         var examined = 0
         while let element = pending.popLast(), examined < 80 {
             examined += 1
             let id = attribute(element, kAXIdentifierAttribute) as? String ?? ""
+            if id.hasPrefix("voice-call-"), id.hasSuffix("-control"), let any = frame(element) { controlsLeft = min(controlsLeft, any.minX) }
             if id == "voice-call-picture-in-picture", let card = frame(element), windowFrame.contains(card) {
                 result.card = card
+                foundCard = true
             } else if ["voice-call-microphone-control", "voice-call-speaker-control", "voice-call-end-control"].contains(id),
                       let controlFrame = frame(element) {
                 let control = Control(element: element, label: attribute(element, kAXDescriptionAttribute) as? String ?? "", frame: controlFrame)
@@ -72,6 +81,17 @@ final class MuseCall {
                 pending.append(contentsOf: children)
             }
         }
+        if large == nil {
+            // The small panel names no picture element. Its picture sits above
+            // and around the row of controls: 8 points of margin, from the top
+            // of the panel to just under the controls.
+            let controls = [result.microphone, result.speaker, result.endCall].compactMap { $0?.frame }
+            guard windowFrame.height >= 250, let end = result.endCall?.frame, let left = controls.map(\.minX).min() else { return nil }
+            let x = max(windowFrame.minX, min(left, controlsLeft) - 8)
+            let card = CGRect(x: x, y: windowFrame.minY + 8, width: end.maxX + 8 - x, height: end.maxY + 6 - windowFrame.minY - 8)
+            guard windowFrame.contains(card), card.width > 60, card.height > 100 else { return nil }
+            result.card = card
+        } else if !foundCard { return nil }
         return result
     }
 

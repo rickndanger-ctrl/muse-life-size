@@ -1,9 +1,9 @@
 # Muse Fullscreen
 
-Keep this a minimal native Mac viewer: the existing Muse avatar, in one ordinary resizable window.
-No floating or always-on-top window. A window manager must be able to tile and resize it.
+Keep this a minimal native Mac viewer: the existing Muse avatar, in one free see-through window the owner moves and sizes himself.
+Never always-on-top. The window must not activate this app when clicked (Muse hides its large avatar when it loses the keyboard).
 No web server, phone pairing, new agent, camera, microphone, or audio capture.
-Use native ScreenCaptureKit and accept only one untitled portrait window owned by Muse.
+Use native ScreenCaptureKit and accept only Muse's identified call picture: its large avatar window, or its small call panel while the avatar is hidden.
 Never fall back to capturing a display or the chat window.
 Change microphone/speaker mute only from an explicit user click on its named control.
 Never end the source call automatically. Escape hides the viewer and leaves its menu-bar shortcut running.
