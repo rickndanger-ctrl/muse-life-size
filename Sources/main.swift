@@ -82,8 +82,16 @@ final class ViewerWindow: NSWindow {
     }
 }
 
+// A click works even when another app (Muse) is the active one.
+final class CallButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 final class ContainerView: NSView {
     var onLayout: (() -> Void)?
+    var onClick: (() -> Void)?
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseUp(with event: NSEvent) { onClick?() }
     override func layout() { super.layout(); onLayout?() }
 }
 
@@ -94,9 +102,9 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private let picture = PictureView()
     private let message = NSTextField(wrappingLabelWithString: "")
     private let permission = NSButton(title: "Allow Screen Recording…", target: nil, action: nil)
-    private let microphone = NSButton()
-    private let speaker = NSButton()
-    private let endCall = NSButton()
+    private let microphone = CallButton()
+    private let speaker = CallButton()
+    private let endCall = CallButton()
     private var statusItem: NSStatusItem!
     private let muse = MuseCall()
     private var timer: Timer?
@@ -181,6 +189,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
             container.addSubview(button)
         }
         container.onLayout = { [weak self] in self?.layoutContents() }
+        container.onClick = { [weak self] in self?.returnToMuse(after: 0.1) }
 
         diagnostic("viewer launched")
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
@@ -192,8 +201,22 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc private func show() {
         shown = true
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
         tick()
+        // Opening this app makes it the active one, and Muse then hides its
+        // avatar. Wait long enough for a window manager to place this window,
+        // then hand the keyboard back to Muse.
+        returnToMuse(after: 2.5)
+    }
+
+    // Muse shows its large avatar only while Muse is the active app. Called
+    // after this app was opened or clicked; never brings Muse to another page.
+    private func returnToMuse(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.shown, NSApp.isActive, self.muse.canShowAvatar(),
+                  let app = NSRunningApplication.runningApplications(withBundleIdentifier: museBundleID).first else { return }
+            NSApp.yieldActivation(to: app)
+            diagnostic("handed the keyboard back to Muse; accepted=\(app.activate())")
+        }
     }
 
     @objc private func hide() {
@@ -274,7 +297,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
             } else if NSRunningApplication.runningApplications(withBundleIdentifier: museBundleID).isEmpty {
                 message.stringValue = "Muse is not open."
             } else {
-                message.stringValue = "Waiting for Muse’s avatar.\n\nStart a call in Muse. The avatar shows while Muse’s own window is open on this page."
+                message.stringValue = "Waiting for Muse’s avatar.\n\nMuse shows it only during a call, while Muse is the app you are using and its window is open on this page. Click Muse’s window to bring it back."
             }
             let width = max(80, min(bounds.width - 32, 380))
             let height = message.sizeThatFits(NSSize(width: width, height: 400)).height
@@ -425,6 +448,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let succeeded = muse.press(action)
         diagnostic("user call-control action \(action); acknowledged=\(succeeded)")
         tick()
+        returnToMuse(after: 0.1)
     }
 
     @objc private func askForScreenRecording() {

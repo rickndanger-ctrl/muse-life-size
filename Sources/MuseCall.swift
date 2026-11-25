@@ -75,19 +75,47 @@ final class MuseCall {
         return result
     }
 
+    // Muse shows its large avatar only while Muse is the active app. True when
+    // a call is up and Muse's own window is open here, so bringing Muse
+    // forward shows the avatar without disturbing another page.
+    func canShowAvatar() -> Bool {
+        guard trusted, let app = NSRunningApplication.runningApplications(withBundleIdentifier: museBundleID).first else { return false }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.25)
+        guard let windows = attribute(root, kAXWindowsAttribute) as? [AXUIElement] else { return false }
+        let ids = windows.map { attribute($0, kAXIdentifierAttribute) as? String ?? "" }
+        let mainOpen = windows.contains { attribute($0, kAXIdentifierAttribute) as? String == "hatch-full" && attribute($0, kAXMinimizedAttribute) as? Bool == false }
+        return mainOpen && (ids.contains("AmbientPanel") || ids.contains("VoiceCallPictureInPicture"))
+    }
+
     // Resolve each click afresh; never send a coordinate click to another app.
     // A timeout is ambiguous, so never automatically retry a toggle.
     enum Action { case microphone, speaker, endCall }
     func press(_ action: Action) -> Bool {
-        guard let current = state() else { return false }
-        let control: Control?
+        // Muse draws the same named controls in its large avatar window and in
+        // the small panel it shows while another app is active.
+        guard trusted, let app = NSRunningApplication.runningApplications(withBundleIdentifier: museBundleID).first else { return false }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.25)
+        let wanted: String
         switch action {
-        case .microphone: control = current.microphone
-        case .speaker: control = current.speaker
-        case .endCall: control = current.endCall
+        case .microphone: wanted = "voice-call-microphone-control"
+        case .speaker: wanted = "voice-call-speaker-control"
+        case .endCall: wanted = "voice-call-end-control"
         }
-        guard let control else { return false }
-        return AXUIElementPerformAction(control.element, kAXPressAction as CFString) == .success
+        let windows = (attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? []).filter {
+            ["VoiceCallPictureInPicture", "AmbientPanel"].contains(attribute($0, kAXIdentifierAttribute) as? String ?? "")
+        }
+        var pending = windows
+        var examined = 0
+        while let element = pending.popLast(), examined < 120 {
+            examined += 1
+            if attribute(element, kAXIdentifierAttribute) as? String == wanted {
+                return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+            }
+            if let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] { pending.append(contentsOf: children) }
+        }
+        return false
     }
 
     func move(_ state: State, to origin: CGPoint) -> Bool {
