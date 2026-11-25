@@ -75,9 +75,13 @@ These are Muse's rules, not this app's. They decide how sharp the picture is.
 - The white backdrop behind the avatar is part of Muse's picture. Everything
   around it is see-through.
 
-**Move Muse's small avatar aside while showing** (menu, on by default) slides
-Muse's large floating avatar to the right screen edge while the picture is showing
-here, and puts it back when this window is hidden.
+**Move Muse's call window aside while showing** (menu, on by default) slides
+Muse's own call window to the right screen edge while the picture is showing here,
+so you see the call once, not twice, and puts it back when this window is hidden.
+It does this for both of Muse's call windows: the large avatar, and the small call
+panel Muse shows on other pages or while another app is in front. With the small
+panel the picture is softer (Muse draws it smaller), but the call can live on a
+page of its own.
 
 ## Permissions
 

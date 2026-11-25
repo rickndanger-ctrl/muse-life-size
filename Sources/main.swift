@@ -161,13 +161,17 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var resizedTicks = 0
     private var call: MuseCall.State?
 
-    // The small avatar's place before this app moved it aside. Saved so a
-    // crash cannot leave it stranded at the screen edge.
+    // Where each of Muse's two call windows was before this app moved it
+    // aside: the large avatar ("avatarHome") and the small call panel
+    // ("panelHome"). Saved so a crash cannot leave one stranded at the edge.
     private var tuckAvatar = UserDefaults.standard.object(forKey: "tuckAvatar") as? Bool ?? true
-    private var avatarHome: CGPoint? = (UserDefaults.standard.array(forKey: "avatarHome") as? [Double]).flatMap {
-        $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil
-    } {
-        didSet { UserDefaults.standard.set(avatarHome.map { [Double($0.x), Double($0.y)] }, forKey: "avatarHome") }
+    private func home(_ large: Bool) -> CGPoint? {
+        (UserDefaults.standard.array(forKey: large ? "avatarHome" : "panelHome") as? [Double]).flatMap {
+            $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil
+        }
+    }
+    private func setHome(_ large: Bool, _ point: CGPoint?) {
+        UserDefaults.standard.set(point.map { [Double($0.x), Double($0.y)] }, forKey: large ? "avatarHome" : "panelHome")
     }
 
     private var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
@@ -324,7 +328,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if shown {
             menu.addItem(withTitle: unfilledFrame == nil ? "Fill the screen" : "Back to its own size", action: #selector(toggleFill), keyEquivalent: "").target = self
         }
-        let aside = menu.addItem(withTitle: "Move Muse’s small avatar aside while showing", action: #selector(toggleTuck), keyEquivalent: "")
+        let aside = menu.addItem(withTitle: "Move Muse’s call window aside while showing", action: #selector(toggleTuck), keyEquivalent: "")
         aside.target = self
         aside.state = tuckAvatar ? .on : .off
         if !muse.trusted {
@@ -414,24 +418,27 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
     }
 
-    // MARK: Muse's small avatar
+    // MARK: Muse's call windows
 
     // The capture needs Muse's avatar window on screen, but it floats above
     // every ordinary window. While the picture is showing here, slide it to
     // the right screen edge so only its empty margin stays on screen. Put it
     // back whenever this window is not showing the picture.
     private func tuck() {
-        guard let call, call.large else { return }
+        // Both call windows: the large avatar, and the small call panel Muse
+        // shows on other pages, where the picture is otherwise seen twice.
+        guard let call else { return }
+        let name = call.large ? "large avatar" : "small call panel"
         let edge = NSScreen.screens.map(\.frame.maxX).max() ?? call.frame.maxX
         let aside = edge - 40
         let isAside = abs(call.frame.minX - aside) < 2
         let want = tuckAvatar && shown && !window.isMiniaturized && receiving
         if want, !isAside {
-            avatarHome = call.frame.origin
-            if muse.move(call, to: CGPoint(x: aside, y: call.frame.minY)) { diagnostic("small avatar moved aside") }
+            setHome(call.large, call.frame.origin)
+            if muse.move(call, to: CGPoint(x: aside, y: call.frame.minY)) { diagnostic("Muse's \(name) moved aside") }
         } else if !want, isAside {
-            let home = avatarHome ?? CGPoint(x: edge - call.frame.width - 20, y: call.frame.minY)
-            if muse.move(call, to: home) { avatarHome = nil; diagnostic("small avatar put back") }
+            let back = home(call.large) ?? CGPoint(x: edge - call.frame.width - 20, y: call.frame.minY)
+            if muse.move(call, to: back) { setHome(call.large, nil); diagnostic("Muse's \(name) put back") }
         }
     }
 
