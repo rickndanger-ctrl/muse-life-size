@@ -60,13 +60,11 @@ final class MuseCall {
         guard let window = large ?? find("AmbientPanel"), let windowFrame = frame(window) else { return nil }
         var result = State(window: window, large: large != nil, frame: windowFrame, card: windowFrame)
         var foundCard = false
-        var controlsLeft = CGFloat.infinity     // includes controls this app has no button for (captions)
         var pending = [window]
         var examined = 0
         while let element = pending.popLast(), examined < 80 {
             examined += 1
             let id = attribute(element, kAXIdentifierAttribute) as? String ?? ""
-            if id.hasPrefix("voice-call-"), id.hasSuffix("-control"), let any = frame(element) { controlsLeft = min(controlsLeft, any.minX) }
             if id == "voice-call-picture-in-picture", let card = frame(element), windowFrame.contains(card) {
                 result.card = card
                 foundCard = true
@@ -82,12 +80,12 @@ final class MuseCall {
             }
         }
         if large == nil {
-            // The small panel names no picture element. Its picture sits above
-            // and around the row of controls: 8 points of margin, from the top
-            // of the panel to just under the controls.
+            // The small panel names no picture element. Its picture starts 8
+            // points in from the panel's top-left corner and ends 8 points right
+            // of the end-call control and just under the controls.
             let controls = [result.microphone, result.speaker, result.endCall].compactMap { $0?.frame }
-            guard windowFrame.height >= 250, let end = result.endCall?.frame, let left = controls.map(\.minX).min() else { return nil }
-            let x = max(windowFrame.minX, min(left, controlsLeft) - 8)
+            guard windowFrame.height >= 250, let end = result.endCall?.frame, controls.count == 3 else { return nil }
+            let x = windowFrame.minX + 8
             let card = CGRect(x: x, y: windowFrame.minY + 8, width: end.maxX + 8 - x, height: end.maxY + 6 - windowFrame.minY - 8)
             guard windowFrame.contains(card), card.width > 60, card.height > 100 else { return nil }
             result.card = card
