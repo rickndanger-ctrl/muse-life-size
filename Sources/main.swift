@@ -119,6 +119,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var started: TimeInterval = 0
     private var ticks = 0
     private var wasReceiving = false
+    private var resizedTicks = 0
     private var call: MuseCall.State?
 
     // The small avatar's place before this app moved it aside. Saved so a
@@ -263,8 +264,12 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         ticks += 1
         call = muse.state()
         if shown {
-            if let stream, let call, capturedCard != .zero, abs(call.card.width - capturedCard.width) > 2 {
+            // The avatar animates in and out, so its size must differ twice running.
+            let resized = call.map { capturedCard != .zero && abs($0.card.width - capturedCard.width) > 2 } ?? false
+            resizedTicks = resized ? resizedTicks + 1 : 0
+            if let stream, resizedTicks >= 2 {
                 diagnostic("avatar changed size; restarting capture")
+                resizedTicks = 0
                 stop(stream)
             } else if stream != nil, call != nil, uptime - max(lastAlive, started) > 6 {
                 diagnostic("avatar is showing but no frames arrive; restarting capture")
