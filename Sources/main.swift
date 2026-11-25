@@ -31,6 +31,14 @@ final class PictureView: MTKView, MTKViewDelegate {
     private let context: CIContext
     private var image: CIImage?
     private(set) var pictureRect = CGRect.zero   // where the picture is, in view points
+    // Muse's small call panel draws its white card with round corners inside a
+    // dark frame; the crop is a plain rectangle, so without this the frame
+    // shows in all four corners. Both are fractions of the picture's width:
+    // the card's corner radius, and how far its top edge sits above the crop.
+    // Measured on Mini 2: 20 and 3 points of a 134-point crop. Zero for the
+    // large avatar, whose picture has no frame around it.
+    var cornerRadius: CGFloat = 0 { didSet { needsDisplay = true } }
+    var cornerOverhang: CGFloat = 0
 
     init() {
         let device = MTLCreateSystemDefaultDevice()!
@@ -66,6 +74,17 @@ final class PictureView: MTKView, MTKViewDelegate {
             if scale > 1, scale < 2.2 { scaled = scaled.applyingFilter("CISharpenLuminance", parameters: [kCIInputSharpnessKey: 0.4]) }
             scaled = scaled.transformed(by: CGAffineTransform(translationX: ((size.width - scaled.extent.width) / 2 - scaled.extent.minX).rounded(),
                                                               y: ((size.height - scaled.extent.height) / 2 - scaled.extent.minY).rounded()))
+            if cornerRadius > 0 {
+                let e = scaled.extent, w = e.width
+                let card = CGRect(x: e.minX, y: e.minY, width: w, height: e.height + cornerOverhang * w)
+                let mask = CIFilter(name: "CIRoundedRectangleGenerator", parameters: [
+                    "inputExtent": CIVector(cgRect: card), "inputRadius": cornerRadius * w, "inputColor": CIColor.white])?
+                    .outputImage?.cropped(to: e)
+                if let mask {
+                    scaled = scaled.applyingFilter("CIBlendWithMask", parameters: [
+                        kCIInputBackgroundImageKey: CIImage(color: .clear).cropped(to: e), kCIInputMaskImageKey: mask])
+                }
+            }
             output = scaled.composited(over: output)
             let points = bounds.width / size.width
             pictureRect = CGRect(x: scaled.extent.minX * points, y: scaled.extent.minY * points,
@@ -432,6 +451,8 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
             config.backgroundColor = .clear
             capturedCard = call.card.size
             capturedLarge = call.large
+            picture.cornerOverhang = call.large ? 0 : 3.0 / 134
+            picture.cornerRadius = call.large ? 0 : 20.0 / 134
             let scale = CGFloat(filter.pointPixelScale)
             config.width = max(2, Int(crop.width * scale))
             config.height = max(2, Int(crop.height * scale))
