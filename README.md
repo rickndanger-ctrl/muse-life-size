@@ -1,7 +1,14 @@
-# Muse Fullscreen
+# Muse Life Size
 
-A small native Mac app that shows the Muse call avatar in a free, see-through
-window of its own: no frame, no background, any size, anywhere on the screen.
+<img src="assets/muse-lifesize-call-3x.png" alt="The Muse call avatar, full body" width="260" align="right">
+
+Muse Life Size (the app is called **Muse Fullscreen**) is a small native Mac app
+that shows your Muse call avatar in a free, see-through window of its own: no
+frame, no background, any size, anywhere on the screen. It shows the live call
+picture, so the avatar moves and talks as it does in Muse.
+
+Not affiliated with or endorsed by Meta. "Muse" is the name of Meta's app; this
+project only reads the call picture Muse already shows on your own Mac.
 
 ## Use
 
@@ -68,3 +75,14 @@ OMAC writes no row for it and it stays in place across three page switches.
 Not checked yet: the picture in this build, from either source; the crop of the
 small call panel (worked out from one measurement); see-through corners; the
 double-click fill; more than one display; a Retina display.
+
+## Artwork
+
+`assets/` holds two high-resolution stills of the author's Muse avatar, made by
+Muse: a full-body picture with a see-through background (2142 x 3672) and a
+square portrait (3200 x 3200). They are artwork for this page. The app itself
+always shows the live call picture.
+
+## License
+
+The code is MIT licensed (see `LICENSE`).
