@@ -14,7 +14,7 @@ project only reads the call picture Muse already shows on your own Mac.
 
 You need an Apple Silicon Mac with macOS 15.2 or later, and Muse.
 
-1. Download **Muse-Fullscreen-2.1.zip** from the
+1. Download **Muse-Fullscreen-2.2.zip** from the
    [latest release](https://github.com/rickndanger-ctrl/muse-life-size/releases/latest).
    It is signed and notarized by Apple, so it opens without warnings.
 2. Double-click the zip and drag **Muse Fullscreen** into Applications. Open it.
