@@ -11,8 +11,8 @@ if [[ -z "$signing_identity" ]]; then
 fi
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 xcrun swiftc -swift-version 5 -O -target arm64-apple-macosx15.2 \
-  -framework AppKit -framework ScreenCaptureKit -framework AVFoundation \
-  Sources/main.swift Sources/MuseControls.swift -o "$app_dir/Contents/MacOS/MuseFullscreen"
+  -framework AppKit -framework ScreenCaptureKit -framework MetalKit -framework CoreImage \
+  Sources/main.swift Sources/MuseCall.swift -o "$app_dir/Contents/MacOS/MuseFullscreen"
 cp Info.plist "$app_dir/Contents/Info.plist"
 codesign --force --sign "$signing_identity" --timestamp=none "$app_dir"
 codesign --verify --strict "$app_dir"

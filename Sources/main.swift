@@ -1,6 +1,7 @@
 import AppKit
 import ScreenCaptureKit
-import AVFoundation
+import MetalKit
+import CoreImage
 import CoreMedia
 
 // Local diagnostics contain only lifecycle events and frame counts, never images.
@@ -21,537 +22,420 @@ func diagnostic(_ message: String) {
     try? handle.write(contentsOf: Data("\(Date().ISO8601Format()) \(message)\n".utf8))
 }
 
-final class ViewerWindow: NSPanel {
+// Draws the newest frame as large as the view allows, keeping its shape.
+// The source is small (about 332 x 568 pixels), so it is enlarged with a
+// Lanczos filter and lightly sharpened instead of plain smoothing.
+final class PictureView: MTKView, MTKViewDelegate {
+    private let commands: MTLCommandQueue
+    private let context: CIContext
+    private var image: CIImage?
+    private(set) var pictureRect = CGRect.zero   // where the picture is, in view points
+
+    init() {
+        let device = MTLCreateSystemDefaultDevice()!
+        commands = device.makeCommandQueue()!
+        context = CIContext(mtlDevice: device)
+        super.init(frame: .zero, device: device)
+        framebufferOnly = false
+        isPaused = true
+        enableSetNeedsDisplay = true
+        delegate = self
+    }
+    required init(coder: NSCoder) { fatalError("init(coder:) not used") }
+
+    var hasPicture: Bool { image != nil }
+    func show(_ buffer: CVPixelBuffer?) {
+        image = buffer.map { CIImage(cvPixelBuffer: $0) }
+        if image == nil { pictureRect = .zero }
+        needsDisplay = true
+    }
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    func draw(in view: MTKView) {
+        let size = drawableSize
+        guard size.width >= 1, size.height >= 1, let drawable = currentDrawable,
+              let buffer = commands.makeCommandBuffer() else { return }
+        var output = CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size))
+        if let image, image.extent.width > 0, image.extent.height > 0 {
+            let scale = min(size.width / image.extent.width, size.height / image.extent.height)
+            var scaled = image.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale, kCIInputAspectRatioKey: 1.0])
+            if scale > 1 { scaled = scaled.applyingFilter("CISharpenLuminance", parameters: [kCIInputSharpnessKey: 0.4]) }
+            scaled = scaled.transformed(by: CGAffineTransform(translationX: ((size.width - scaled.extent.width) / 2 - scaled.extent.minX).rounded(),
+                                                              y: ((size.height - scaled.extent.height) / 2 - scaled.extent.minY).rounded()))
+            output = scaled.composited(over: output)
+            let points = bounds.width / size.width
+            pictureRect = CGRect(x: scaled.extent.minX * points, y: scaled.extent.minY * points,
+                                 width: scaled.extent.width * points, height: scaled.extent.height * points)
+        }
+        let destination = CIRenderDestination(width: Int(size.width), height: Int(size.height),
+                                              pixelFormat: colorPixelFormat, commandBuffer: buffer) { drawable.texture }
+        _ = try? context.startTask(toRender: output, to: destination)
+        buffer.present(drawable)
+        buffer.commit()
+    }
+}
+
+final class ViewerWindow: NSWindow {
     var onEscape: (() -> Void)?
-    override var canBecomeKey: Bool { true }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { onEscape?() } else { super.keyDown(with: event) }
     }
 }
 
-final class PictureView: NSView {
-    let display = AVSampleBufferDisplayLayer()
-    var sourceSize = CGSize(width: 442, height: 686)
+final class ContainerView: NSView {
     var onLayout: (() -> Void)?
-    var videoRect: CGRect {
-        let scale = min(bounds.width / sourceSize.width, bounds.height / sourceSize.height)
-        let size = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
-        return CGRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
-    }
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
-        display.videoGravity = .resizeAspect
-        display.isOpaque = false
-        display.backgroundColor = NSColor.clear.cgColor
-        layer?.addSublayer(display)
-        setAccessibilityElement(false)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        display.frame = videoRect
-        CATransaction.commit()
-        onLayout?()
-    }
+    override func layout() { super.layout(); onLayout?() }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-                         SCStreamOutput, SCStreamDelegate {
-    private let setupStyle: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .nonactivatingPanel]
+final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate,
+                              SCStreamOutput, SCStreamDelegate {
     private var window: ViewerWindow!
-    private let picture = PictureView(frame: .zero)
-    private let startPanel = NSStackView()
-    private let message = NSTextField(wrappingLabelWithString: "Open your Muse call.\nThis app finds the avatar and makes it full screen.")
-    private let choose = NSButton(title: "Make Muse full screen", target: nil, action: nil)
-    private var stream: SCStream?
-    private let captureQueue = DispatchQueue(label: "local.muse.fullscreen.frames", qos: .userInteractive)
-    private var frames = 0
-    private var generation = 0
-    private var firstFrameTimeout: DispatchWorkItem?
-    private var starting = false
-    private var expanded = false
-    private var originalFrame = NSRect.zero
-    private let callControls = MuseControls()
-    private var statusItem: NSStatusItem!
-    private var updateTimer: Timer?
-    private var discoveryRunning = false
-    private var avatarAvailable = false
-    private var sourceWindowID: CGWindowID?
-    private var lastFrameTime: TimeInterval = 0
-    private var sourceFrame = CGRect.zero
-    private var currentControls: MuseControls.Snapshot?
-    private let toolbar = NSStackView()
-    private let enableControls = NSButton(title: "Enable call controls…", target: nil, action: nil)
+    private let container = ContainerView()
+    private let picture = PictureView()
+    private let message = NSTextField(wrappingLabelWithString: "")
+    private let permission = NSButton(title: "Allow Screen Recording…", target: nil, action: nil)
     private let microphone = NSButton()
     private let speaker = NSButton()
     private let endCall = NSButton()
-    private var transparent = UserDefaults.standard.object(forKey: "transparent") as? Bool ?? true
+    private var statusItem: NSStatusItem!
+    private let muse = MuseCall()
+    private var timer: Timer?
+
+    private var shown = false
+    private var stream: SCStream?
+    private var starting = false
+    private var capturedCard = CGSize.zero
+    private let frameQueue = DispatchQueue(label: "local.muse.fullscreen.frames", qos: .userInteractive)
+    private var frames = 0
+    private var lastAlive: TimeInterval = 0
+    private var started: TimeInterval = 0
+    private var ticks = 0
+    private var wasReceiving = false
+    private var call: MuseCall.State?
+
+    // The small avatar's place before this app moved it aside. Saved so a
+    // crash cannot leave it stranded at the screen edge.
+    private var tuckAvatar = UserDefaults.standard.object(forKey: "tuckAvatar") as? Bool ?? true
+    private var avatarHome: CGPoint? = (UserDefaults.standard.array(forKey: "avatarHome") as? [Double]).flatMap {
+        $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil
+    } {
+        didSet { UserDefaults.standard.set(avatarHome.map { [Double($0.x), Double($0.y)] }, forKey: "avatarHome") }
+    }
+
+    private var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
+    private var receiving: Bool { stream != nil && uptime - lastAlive < 2.5 }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let mainMenu = NSMenu()
+        let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        let applicationItem = NSMenuItem()
-        let applicationMenu = NSMenu()
-        let showItem = applicationMenu.addItem(withTitle: "Open full screen", action: #selector(toggleViewer), keyEquivalent: "f")
-        showItem.target = self
-        let controlsItem = applicationMenu.addItem(withTitle: "Enable call controls…", action: #selector(requestControls), keyEquivalent: "")
-        controlsItem.target = self
-        let backgroundItem = applicationMenu.addItem(withTitle: "Transparent background", action: #selector(toggleMenuBackground), keyEquivalent: "")
-        backgroundItem.target = self
-        backgroundItem.state = transparent ? .on : .off
-        applicationMenu.addItem(.separator())
-        applicationMenu.addItem(withTitle: "Quit Muse Fullscreen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        applicationItem.submenu = applicationMenu
-        appMenu.addItem(applicationItem)
-        NSApp.mainMenu = appMenu
+        appMenu.addItem(withTitle: "Hide Muse Fullscreen", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit Muse Fullscreen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowItem.submenu = windowMenu
+        mainMenu.addItem(windowItem)
+        NSApp.mainMenu = mainMenu
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "Enlarge Muse"
-        statusItem.button?.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: "Muse full screen")
+        statusItem.button?.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: "Muse Fullscreen")
         statusItem.button?.imagePosition = .imageLeading
-        statusItem.button?.target = self
-        statusItem.button?.action = #selector(statusClicked)
-        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        statusItem.button?.toolTip = "Open Muse full screen. Right-click for options."
+        let menu = NSMenu()
+        menu.delegate = self
+        statusItem.menu = menu
 
-        window = ViewerWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 290),
-                              styleMask: setupStyle,
+        // An ordinary window: a window manager may move and resize it freely.
+        window = ViewerWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 740),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "Muse Fullscreen"
         window.delegate = self
-        window.hidesOnDeactivate = false
-        window.onEscape = { [weak self] in self?.hideViewer() }
-        window.collectionBehavior = [.fullScreenPrimary]
+        window.isReleasedWhenClosed = false
         window.backgroundColor = .black
-        window.contentView = picture
-        window.minSize = NSSize(width: 420, height: 260)
+        window.contentMinSize = NSSize(width: 160, height: 160)
+        window.onEscape = { [weak self] in self?.hide() }
+        window.contentView = container
         window.center()
 
-        let title = NSTextField(labelWithString: "Your Muse, full screen.")
-        title.font = .systemFont(ofSize: 25, weight: .medium)
-        title.textColor = .white
-        message.font = .systemFont(ofSize: 14)
-        message.textColor = .lightGray
         message.alignment = .center
-        let hint = NSTextField(labelWithString: "Escape returns to your desktop. Use Enlarge Muse in the menu bar to reopen.")
-        hint.font = .systemFont(ofSize: 12)
-        hint.textColor = .lightGray
-        choose.bezelStyle = .rounded
-        choose.controlSize = .large
-        choose.target = self
-        choose.action = #selector(chooseWindow)
-        startPanel.orientation = .vertical
-        startPanel.alignment = .centerX
-        startPanel.spacing = 20
-        let setupControls = NSButton(title: "Enable call controls…", target: self, action: #selector(requestControls))
-        setupControls.bezelStyle = .rounded
-        [title, message, choose, setupControls, hint].forEach { startPanel.addArrangedSubview($0) }
-        startPanel.translatesAutoresizingMaskIntoConstraints = false
-        picture.addSubview(startPanel)
-        configureControls()
-        NSLayoutConstraint.activate([
-            startPanel.centerXAnchor.constraint(equalTo: picture.centerXAnchor),
-            startPanel.centerYAnchor.constraint(equalTo: picture.centerYAnchor),
-            message.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
-        ])
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        diagnostic("viewer launched; no capture active")
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in self?.refresh() }
-        refresh()
-    }
-
-    private func configureControls() {
-        toolbar.orientation = .horizontal
-        toolbar.spacing = 10
-        toolbar.wantsLayer = true
-        toolbar.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.95).cgColor
-        toolbar.layer?.cornerRadius = 10
-        toolbar.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
-        let back = NSButton(title: "Back · Esc", target: self, action: #selector(hideViewer))
-        let background = NSButton(checkboxWithTitle: "Transparent background", target: self, action: #selector(toggleBackground))
-        background.state = transparent ? .on : .off
-        enableControls.target = self
-        enableControls.action = #selector(requestControls)
-        [back, background, enableControls].forEach { toolbar.addArrangedSubview($0) }
-        toolbar.translatesAutoresizingMaskIntoConstraints = false
-        picture.addSubview(toolbar)
-        NSLayoutConstraint.activate([
-            toolbar.centerXAnchor.constraint(equalTo: picture.centerXAnchor),
-            toolbar.topAnchor.constraint(equalTo: picture.topAnchor, constant: 8)
-        ])
-        toolbar.isHidden = true
-        for (button, action, label) in [
-            (microphone, #selector(toggleMicrophone), "Microphone"),
-            (speaker, #selector(toggleSpeaker), "Speaker"),
-            (endCall, #selector(endSourceCall), "End call")
-        ] {
+        message.textColor = .lightGray
+        message.font = .systemFont(ofSize: 14)
+        permission.bezelStyle = .rounded
+        permission.target = self
+        permission.action = #selector(askForScreenRecording)
+        container.addSubview(picture)
+        container.addSubview(message)
+        container.addSubview(permission)
+        for (button, action) in [(microphone, #selector(toggleMicrophone)), (speaker, #selector(toggleSpeaker)), (endCall, #selector(endSourceCall))] {
             button.target = self
             button.action = action
-            button.bezelStyle = .regularSquare
             button.isBordered = false
             button.wantsLayer = true
-            button.layer?.backgroundColor = NSColor(white: 0.92, alpha: 1).cgColor
-            button.layer?.cornerRadius = 13
-            button.setAccessibilityLabel(label)
+            button.layer?.backgroundColor = NSColor(white: 0.94, alpha: 1).cgColor
             button.isHidden = true
-            picture.addSubview(button)
+            container.addSubview(button)
         }
-        picture.onLayout = { [weak self] in self?.layoutControls() }
+        container.onLayout = { [weak self] in self?.layoutContents() }
+
+        diagnostic("viewer launched")
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        show()
     }
 
-    @objc private func statusClicked() {
-        diagnostic("menu-bar shortcut clicked")
-        if NSApp.currentEvent?.type == .rightMouseUp {
-            let menu = NSMenu()
-            let open = menu.addItem(withTitle: expanded ? "Return to desktop" : "Open full screen", action: #selector(toggleViewer), keyEquivalent: "")
-            open.target = self
-            let controls = menu.addItem(withTitle: "Enable call controls…", action: #selector(requestControls), keyEquivalent: "")
-            controls.target = self
-            menu.addItem(.separator())
-            menu.addItem(withTitle: "Quit Muse Fullscreen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-            statusItem.menu = menu
-            statusItem.button?.performClick(nil)
-            statusItem.menu = nil
-        } else { toggleViewer() }
+    // MARK: Showing and hiding
+
+    @objc private func show() {
+        shown = true
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        tick()
     }
 
-    @objc private func toggleViewer() {
-        if expanded { hideViewer(); return }
-        chooseWindow()
+    @objc private func hide() {
+        guard shown else { return }
+        shown = false
+        stopStream()
+        picture.show(nil)
+        tuck()
+        window.orderOut(nil)
+        diagnostic("viewer hidden; menu-bar shortcut remains; source call unchanged")
     }
 
-    private func refresh() {
-        currentControls = callControls.snapshot()
-        enableControls.isHidden = callControls.trusted
-        layoutControls()
-        guard !discoveryRunning, CGPreflightScreenCaptureAccess() else { return }
-        discoveryRunning = true
-        let discoveryGeneration = generation
-        Task { @MainActor in
-            defer { discoveryRunning = false }
-            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return }
-            guard generation == discoveryGeneration else { return }
-            let candidates = content.windows.filter(isAvatar)
-            avatarAvailable = candidates.count == 1
-            statusItem.button?.appearsDisabled = !avatarAvailable && !expanded
-            guard expanded, let sourceWindowID else { return }
-            if let source = candidates.first(where: { $0.windowID == sourceWindowID }) {
-                sourceFrame = source.frame
-            } else if ProcessInfo.processInfo.systemUptime - lastFrameTime >= 4 {
-                // A focus handoff can briefly hide the floating window while
-                // its selected-window stream is still delivering real frames.
-                diagnostic("avatar no longer visible and capture has stopped delivering frames")
-                hideViewer()
+    @objc private func toggle() { shown ? hide() : show() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
+    func windowDidMiniaturize(_ notification: Notification) { tuck() }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !shown { show() } else if window.isMiniaturized { window.deminiaturize(nil) }
+        return true
+    }
+    func applicationWillTerminate(_ notification: Notification) {
+        shown = false
+        call = muse.state()
+        tuck()
+        diagnostic("viewer closed; source call unchanged")
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        menu.addItem(withTitle: shown ? "Hide viewer" : "Show viewer", action: #selector(toggle), keyEquivalent: "").target = self
+        let aside = menu.addItem(withTitle: "Move Muse’s small avatar aside while showing", action: #selector(toggleTuck), keyEquivalent: "")
+        aside.target = self
+        aside.state = tuckAvatar ? .on : .off
+        if !muse.trusted {
+            menu.addItem(withTitle: "Enable call buttons…", action: #selector(askForAccessibility), keyEquivalent: "").target = self
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Muse Fullscreen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+    }
+
+    // MARK: Once a second
+
+    private func tick() {
+        ticks += 1
+        call = muse.state()
+        if shown {
+            if let stream, let call, capturedCard != .zero, abs(call.card.width - capturedCard.width) > 2 {
+                diagnostic("avatar changed size; restarting capture")
+                stop(stream)
+            } else if stream != nil, call != nil, uptime - max(lastAlive, started) > 6 {
+                diagnostic("avatar is showing but no frames arrive; restarting capture")
+                stopStream()
             }
+            if stream == nil, !starting, CGPreflightScreenCaptureAccess() { findAvatar() }
         }
+        if receiving != wasReceiving {
+            wasReceiving = receiving
+            diagnostic(receiving ? "live picture showing" : "picture stopped: avatar not on screen")
+            if !receiving { picture.show(nil) }
+        }
+        if receiving, ticks % 30 == 0 {
+            diagnostic("live; \(frames) frames in 30 s; shown at \(Int(picture.pictureRect.width))x\(Int(picture.pictureRect.height))")
+            frames = 0
+        }
+        tuck()
+        layoutContents()
     }
 
-    private func isAvatar(_ source: SCWindow) -> Bool {
-        source.owningApplication?.bundleIdentifier == "com.meta.endo"
-        && (source.title ?? "").isEmpty && source.frame.width >= 100
-        && source.isOnScreen && source.windowLayer == 3
-        && source.frame.height > source.frame.width * 1.45
-        && source.frame.height < source.frame.width * 2.2
-    }
-
-    private func layoutControls() {
-        guard expanded, sourceFrame.width > 0, sourceFrame.height > 0 else {
-            [microphone, speaker, endCall].forEach { $0.isHidden = true }
-            return
+    private func layoutContents() {
+        let bounds = container.bounds
+        picture.frame = bounds
+        let live = receiving && picture.hasPicture
+        message.isHidden = live
+        permission.isHidden = live || CGPreflightScreenCaptureAccess()
+        if !live {
+            if !CGPreflightScreenCaptureAccess() {
+                message.stringValue = "Muse Fullscreen needs Screen Recording permission to show the avatar."
+            } else if NSRunningApplication.runningApplications(withBundleIdentifier: museBundleID).isEmpty {
+                message.stringValue = "Muse is not open."
+            } else {
+                message.stringValue = "Waiting for Muse’s avatar.\n\nStart a call in Muse. The avatar shows while Muse’s own window is open on this page."
+            }
+            let width = max(80, min(bounds.width - 32, 380))
+            let height = message.sizeThatFits(NSSize(width: width, height: 400)).height
+            message.frame = NSRect(x: (bounds.width - width) / 2, y: (bounds.height - height) / 2, width: width, height: height)
+            permission.sizeToFit()
+            permission.frame.origin = NSPoint(x: (bounds.width - permission.frame.width) / 2, y: message.frame.minY - permission.frame.height - 12)
         }
-        let rect = picture.videoRect
-        for (button, control, fallback) in [
-            (microphone, currentControls?.microphone, "mic"),
-            (speaker, currentControls?.speaker, "speaker.wave.2"),
-            (endCall, currentControls?.endCall, "phone.down.fill")
+        // The three buttons sit exactly over Muse's own controls in the picture.
+        let rect = picture.pictureRect
+        for (button, control, normal, off) in [
+            (microphone, call?.microphone, "mic.fill", "mic.slash.fill"),
+            (speaker, call?.speaker, "speaker.wave.2.fill", "speaker.slash.fill"),
+            (endCall, call?.endCall, "phone.down.fill", "phone.down.fill")
         ] {
-            guard let control, let frame = control.frame else { button.isHidden = true; continue }
-            let centerX = rect.minX + (frame.midX - sourceFrame.minX) / sourceFrame.width * rect.width
-            let centerY = rect.maxY - (frame.midY - sourceFrame.minY) / sourceFrame.height * rect.height
-            guard rect.contains(CGPoint(x: centerX, y: centerY)) else { button.isHidden = true; continue }
-            let side = max(32, min(48, frame.height / sourceFrame.height * rect.height))
-            button.frame = CGRect(x: centerX - side / 2, y: centerY - side / 2, width: side, height: side)
-            let muted = control.label.lowercased().hasPrefix("unmute")
-            let symbol = button === microphone ? (muted ? "mic.slash.fill" : "mic.fill")
-                : button === speaker ? (muted ? "speaker.slash.fill" : "speaker.wave.2.fill") : fallback
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: control.label)
-            button.contentTintColor = button === endCall || (button === microphone && muted) ? .systemRed : .labelColor
+            guard live, let call, let control, rect.width > 0, call.card.width > 0 else { button.isHidden = true; continue }
+            let zoom = rect.width / call.card.width
+            let side = max(24, min(64, control.frame.height * zoom))
+            let x = rect.minX + (control.frame.midX - call.card.minX) * zoom
+            let y = rect.maxY - (control.frame.midY - call.card.minY) * zoom
+            button.frame = NSRect(x: x - side / 2, y: y - side / 2, width: side, height: side)
+            button.layer?.cornerRadius = side / 2
+            let isOff = control.label.lowercased().hasPrefix("unmute")
+            button.image = NSImage(systemSymbolName: isOff ? off : normal, accessibilityDescription: control.label)
+            button.contentTintColor = button === endCall || isOff ? .systemRed : .darkGray
             button.toolTip = control.label
             button.setAccessibilityLabel(control.label)
             button.isHidden = false
         }
     }
 
-    @objc private func requestControls() {
-        guard !callControls.trusted else { refresh(); return }
-        callControls.requestPermission()
-        let alert = NSAlert()
-        alert.messageText = "Let the buttons control Muse"
-        alert.informativeText = "Enable Muse Fullscreen in System Settings → Privacy & Security → Accessibility. This lets these buttons press Muse’s microphone, speaker, and end-call controls. It does not give this viewer microphone access."
-        alert.addButton(withTitle: "Open Accessibility Settings")
-        alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn,
-           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
+    // MARK: Muse's small avatar
+
+    // The capture needs Muse's avatar window on screen, but it floats above
+    // every ordinary window. While the picture is showing here, slide it to
+    // the right screen edge so only its empty margin stays on screen. Put it
+    // back whenever this window is not showing the picture.
+    private func tuck() {
+        guard let call else { return }
+        let edge = NSScreen.screens.map(\.frame.maxX).max() ?? call.frame.maxX
+        let aside = edge - 40
+        let isAside = abs(call.frame.minX - aside) < 2
+        let want = tuckAvatar && shown && !window.isMiniaturized && receiving
+        if want, !isAside {
+            avatarHome = call.frame.origin
+            if muse.move(call, to: CGPoint(x: aside, y: call.frame.minY)) { diagnostic("small avatar moved aside") }
+        } else if !want, isAside {
+            let home = avatarHome ?? CGPoint(x: edge - call.frame.width - 20, y: call.frame.minY)
+            if muse.move(call, to: home) { avatarHome = nil; diagnostic("small avatar put back") }
         }
     }
 
-    @objc private func toggleMicrophone() { performControl(.microphone) }
-    @objc private func toggleSpeaker() { performControl(.speaker) }
-    @objc private func endSourceCall() { performControl(.endCall) }
-    private func performControl(_ action: MuseControls.Action) {
-        guard callControls.trusted else { requestControls(); return }
-        let succeeded = callControls.press(action)
-        diagnostic("user call-control action \(action); acknowledged=\(succeeded)")
-        if succeeded && action == .endCall { hideViewer() }
-        refresh()
+    @objc private func toggleTuck() {
+        tuckAvatar.toggle()
+        UserDefaults.standard.set(tuckAvatar, forKey: "tuckAvatar")
+        tuck()
     }
 
-    @objc private func toggleBackground(_ sender: NSButton) {
-        transparent = sender.state == .on
-        saveBackground()
-    }
-    @objc private func toggleMenuBackground(_ sender: NSMenuItem) {
-        transparent.toggle()
-        saveBackground()
-    }
-    private func saveBackground() {
-        UserDefaults.standard.set(transparent, forKey: "transparent")
-        NSApp.mainMenu?.items.first?.submenu?.item(withTitle: "Transparent background")?.state = transparent ? .on : .off
-        (toolbar.arrangedSubviews.first(where: { ($0 as? NSButton)?.title == "Transparent background" }) as? NSButton)?.state = transparent ? .on : .off
-        applyBackground()
-    }
-    private func applyBackground() {
-        let clear = expanded && transparent
-        window.isOpaque = !clear
-        window.backgroundColor = clear ? .clear : .black
-        window.hasShadow = !expanded
-        picture.layer?.backgroundColor = (clear ? NSColor.clear : NSColor.black).cgColor
+    // MARK: Capture
+
+    // Accept only one untitled portrait floating window owned by Muse.
+    private func isAvatar(_ source: SCWindow) -> Bool {
+        source.owningApplication?.bundleIdentifier == museBundleID
+        && (source.title ?? "").isEmpty && source.windowLayer == 3 && source.isOnScreen
+        && source.frame.width >= 100
+        && source.frame.height > source.frame.width * 1.45
+        && source.frame.height < source.frame.width * 2.2
     }
 
-    @objc private func hideViewer() {
-        generation += 1
-        firstFrameTimeout?.cancel()
-        let old = stream
-        stream = nil
-        sourceWindowID = nil
-        if let old { Task { try? await old.stopCapture() } }
-        picture.display.flushAndRemoveImage()
-        starting = false
-        choose.isEnabled = true
-        startPanel.isHidden = false
-        toolbar.isHidden = true
-        restoreWindow()
-        layoutControls()
-        window.orderOut(nil)
-        diagnostic("viewer hidden; menu-bar shortcut remains; source call unchanged")
-    }
-
-    @objc private func chooseWindow() {
-        guard !starting, stream == nil else { return }
-        guard let muse = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.meta.endo" }) else {
-            showError("Open a call in Muse first, then try again.")
-            return
-        }
-        guard CGPreflightScreenCaptureAccess() else {
-            diagnostic("requesting macOS screen-capture permission")
-            _ = CGRequestScreenCaptureAccess()
-            showError("Allow Muse Fullscreen in macOS Screen Recording settings, then click the button again.")
-            return
-        }
+    private func findAvatar() {
         starting = true
-        generation += 1
-        let selectionGeneration = generation
-        choose.isEnabled = false
-        message.stringValue = "Finding the Muse avatar…"
         Task { @MainActor in
-            do {
-                // Keep Muse active until the stream has a real frame. Bringing
-                // the viewer forward too early can hide the floating source.
-                if !muse.isActive {
-                    NSApp.yieldActivation(to: muse)
-                    _ = muse.activate()
-                }
-                for attempt in 0..<9 {
-                    if attempt > 0 { try await Task.sleep(for: .milliseconds(250)) }
-                    guard generation == selectionGeneration else { return }
-                    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                    guard generation == selectionGeneration else { return }
-                    let candidates = content.windows.filter(isAvatar)
-                    if candidates.count > 1 {
-                        showError("More than one Muse avatar window was found. Leave only your call window open and try again.")
-                        return
-                    }
-                    if let source = candidates.first {
-                        sourceFrame = source.frame
-                        sourceWindowID = source.windowID
-                        diagnostic("capturing only Muse avatar window \(source.windowID) after \(attempt + 1) checks")
-                        starting = false
-                        start(filter: SCContentFilter(desktopIndependentWindow: source))
-                        return
-                    }
-                    if attempt == 1 || attempt == 4 { callControls.showAvatar() }
-                }
-                showError("Open Muse’s floating avatar call window, then click Enlarge Muse again.")
-            } catch {
-                guard generation == selectionGeneration else { return }
-                diagnostic("window lookup failed: \((error as NSError).code)")
-                showError("macOS could not access the Muse window. Check Screen Recording permission for Muse Fullscreen.")
+            defer { starting = false }
+            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return }
+            let candidates = content.windows.filter(isAvatar)
+            guard shown, stream == nil, candidates.count == 1, let source = candidates.first else { return }
+            let filter = SCContentFilter(desktopIndependentWindow: source)
+            let config = SCStreamConfiguration()
+            var crop = CGRect(origin: .zero, size: source.frame.size)
+            capturedCard = .zero
+            // Capture only the picture, not the empty margin around it.
+            if let call = muse.state(), abs(call.frame.width - source.frame.width) <= 2, abs(call.frame.height - source.frame.height) <= 2 {
+                crop = call.card.offsetBy(dx: -call.frame.minX, dy: -call.frame.minY)
+                config.sourceRect = crop
+                capturedCard = call.card.size
             }
-        }
-    }
-
-    private func start(filter: SCContentFilter) {
-        guard !starting, stream == nil else { return }
-        starting = true
-        choose.isEnabled = false
-        message.stringValue = "Opening the live Muse picture…"
-        generation += 1
-        let currentGeneration = generation
-        let config = SCStreamConfiguration()
-        let scale = CGFloat(filter.pointPixelScale)
-        config.width = max(2, Int(filter.contentRect.width * scale))
-        config.height = max(2, Int(filter.contentRect.height * scale))
-        picture.sourceSize = CGSize(width: config.width, height: config.height)
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
-        config.queueDepth = 3
-        config.pixelFormat = kCVPixelFormatType_32BGRA
-        config.showsCursor = false
-        config.capturesAudio = false
-        config.captureMicrophone = false
-        config.ignoreShadowsSingleWindow = true
-        config.ignoreGlobalClipSingleWindow = true
-        let capture = SCStream(filter: filter, configuration: config, delegate: self)
-        self.stream = capture
-        frames = 0
-        Task { @MainActor in
+            let scale = CGFloat(filter.pointPixelScale)
+            config.width = max(2, Int(crop.width * scale))
+            config.height = max(2, Int(crop.height * scale))
+            config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+            config.queueDepth = 4
+            config.pixelFormat = kCVPixelFormatType_32BGRA
+            config.showsCursor = false
+            config.capturesAudio = false
+            config.captureMicrophone = false
+            config.ignoreShadowsSingleWindow = true
+            config.ignoreGlobalClipSingleWindow = true
+            let capture = SCStream(filter: filter, configuration: config, delegate: self)
             do {
-                try capture.addStreamOutput(self, type: .screen, sampleHandlerQueue: captureQueue)
+                try capture.addStreamOutput(self, type: .screen, sampleHandlerQueue: frameQueue)
                 try await capture.startCapture()
-                guard generation == currentGeneration, self.stream === capture else { return }
-                diagnostic("capture started; video only; \(config.width)x\(config.height)")
-                let timeout = DispatchWorkItem { [weak self] in
-                    guard let self, self.frames == 0, self.stream === capture else { return }
-                    self.showError("No live picture arrived. Keep the Muse call window open and try again.")
-                }
-                firstFrameTimeout = timeout
-                DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
+                guard shown, stream == nil else { try? await capture.stopCapture(); return }
+                stream = capture
+                started = uptime
+                diagnostic("capturing only Muse avatar window \(source.windowID); video only; \(config.width)x\(config.height)")
             } catch {
-                guard generation == currentGeneration else { return }
                 diagnostic("capture failed: \((error as NSError).code)")
-                showError("The Muse window could not be shared. Keep its call open and try again.")
             }
         }
+    }
+
+    private func stopStream() { if let stream { stop(stream) } }
+    private func stop(_ old: SCStream) {
+        if stream === old { stream = nil }
+        Task { try? await old.stopCapture() }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let rawStatus = attachments.first?[.status] as? Int,
-              SCFrameStatus(rawValue: rawStatus) == .complete,
-              CMSampleBufferGetImageBuffer(sampleBuffer) != nil else { return }
-        if let array = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) {
-            let dictionary = unsafeBitCast(CFArrayGetValueAtIndex(array, 0), to: CFMutableDictionary.self)
-            CFDictionarySetValue(dictionary,
-                Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
-                Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
-        }
+              let raw = attachments.first?[.status] as? Int, let status = SCFrameStatus(rawValue: raw),
+              status == .complete || status == .idle else { return }
+        let buffer = status == .complete ? CMSampleBufferGetImageBuffer(sampleBuffer) : nil
         DispatchQueue.main.async { [weak self] in
             guard let self, self.stream === stream else { return }
-            if self.picture.display.status == .failed { self.picture.display.flush() }
-            self.picture.display.enqueue(sampleBuffer)
+            self.lastAlive = self.uptime
+            guard let buffer else { return }
             self.frames += 1
-            self.lastFrameTime = ProcessInfo.processInfo.systemUptime
-            if self.frames == 1 {
-                self.firstFrameTimeout?.cancel()
-                self.starting = false
-                self.startPanel.isHidden = true
-                self.toolbar.isHidden = false
-                self.window.title = "Muse Fullscreen — live"
-                self.fillCurrentScreen()
-                self.refresh()
-                diagnostic("first live frame displayed")
-            } else if self.frames == 90 {
-                diagnostic("90 live frames displayed; renderer status \(self.picture.display.status.rawValue)")
-            }
+            let first = !self.picture.hasPicture
+            self.picture.show(buffer)
+            if first { self.tick() }
         }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.stream === stream else { return }
-            diagnostic("source stopped: \((error as NSError).code)")
-            self.showError("The shared window stopped. Open the Muse call and choose it again.")
+            diagnostic("capture stopped: \((error as NSError).code)")
+            self.stream = nil
         }
     }
 
-    private func showError(_ text: String) {
-        diagnostic("viewer error: \(text)")
-        generation += 1
-        firstFrameTimeout?.cancel()
-        let old = stream
-        stream = nil
-        sourceWindowID = nil
-        if let old { Task { try? await old.stopCapture() } }
-        picture.display.flushAndRemoveImage()
-        starting = false
-        choose.isEnabled = true
-        startPanel.isHidden = false
-        toolbar.isHidden = true
-        message.stringValue = text
-        window.title = "Muse Fullscreen"
-        restoreWindow()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    // MARK: Buttons
+
+    @objc private func toggleMicrophone() { press(.microphone) }
+    @objc private func toggleSpeaker() { press(.speaker) }
+    @objc private func endSourceCall() { press(.endCall) }
+    private func press(_ action: MuseCall.Action) {
+        let succeeded = muse.press(action)
+        diagnostic("user call-control action \(action); acknowledged=\(succeeded)")
+        tick()
     }
 
-    private func fillCurrentScreen() {
-        guard !expanded, let screen = window.screen ?? NSScreen.main else { return }
-        originalFrame = window.frame
-        expanded = true
-        // Keep Muse on the same desktop. A separate full-screen Space can hide
-        // its floating avatar and leave the captured picture black.
-        // Preserve the nonactivating style from window creation so Muse can
-        // keep rendering when the viewer comes to the front or is clicked.
-        window.styleMask = [.borderless, .nonactivatingPanel]
-        window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
-        let topInset = screen.frame.maxY - screen.visibleFrame.maxY
-        var frame = screen.frame
-        frame.size.height -= topInset
-        window.setFrame(frame, display: true)
-        applyBackground()
-        window.orderFrontRegardless()
-        window.makeKeyAndOrderFront(nil)
-        diagnostic("filled current screen; \(Int(screen.frame.width))x\(Int(screen.frame.height))")
+    @objc private func askForScreenRecording() {
+        diagnostic("requesting macOS screen-capture permission")
+        _ = CGRequestScreenCaptureAccess()
     }
-
-    private func restoreWindow() {
-        guard expanded else { return }
-        expanded = false
-        applyBackground()
-        window.level = .normal
-        window.styleMask = setupStyle
-        window.setFrame(originalFrame, display: true)
-    }
-
-    func windowShouldClose(_ sender: NSWindow) -> Bool { hideViewer(); return false }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !expanded { toggleViewer() }
-        return true
-    }
-    func applicationWillTerminate(_ notification: Notification) {
-        firstFrameTimeout?.cancel()
-        updateTimer?.invalidate()
-        diagnostic("viewer closed; source call unchanged")
-    }
+    @objc private func askForAccessibility() { muse.requestPermission() }
 }
 
 let app = NSApplication.shared
-let delegate = AppDelegate()
+let controller = ViewerController()
 app.setActivationPolicy(.regular)
-app.delegate = delegate
+app.delegate = controller
 app.run()

@@ -6,8 +6,8 @@
 <key>CFBundleName</key><string>Muse Fullscreen</string>
 <key>CFBundleDisplayName</key><string>Muse Fullscreen</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.1</string>
-<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleShortVersionString</key><string>2.0</string>
+<key>CFBundleVersion</key><string>3</string>
 <key>LSMinimumSystemVersion</key><string>15.2</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSScreenCaptureUsageDescription</key><string>Enlarge only the Muse call window you choose, locally on this Mac.</string>
