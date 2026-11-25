@@ -54,7 +54,7 @@ Audio stays in Muse. Nothing ends or starts a call by itself.
 `./build.sh` needs Xcode command-line tools and an installed Apple Development
 signing identity (or `MUSE_CODESIGN_IDENTITY`). Keep the same identity across
 builds so macOS keeps its approvals. Apple Silicon, macOS 15.2 or later.
-Diagnostics (events and frame counts, never images) go to `.runtime/viewer.log`.
+Diagnostics (events and frame counts, never images) go to `~/Library/Logs/Muse Fullscreen/viewer.log`, wherever the app is kept.
 
 ## Checked, and not
 

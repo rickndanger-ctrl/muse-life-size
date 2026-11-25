@@ -5,18 +5,18 @@ import CoreImage
 import CoreMedia
 
 // Local diagnostics contain only lifecycle events and frame counts, never images.
-func diagnostic(_ message: String) {
-    let directory = URL(fileURLWithPath: CommandLine.arguments[0])
-        .deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent(".runtime", isDirectory: true)
-    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                            attributes: [.posixPermissions: 0o700])
+// One fixed place, wherever the app itself is kept.
+let diagnosticsFile: URL = {
+    let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Muse Fullscreen", isDirectory: true)
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let file = directory.appendingPathComponent("viewer.log")
     if !FileManager.default.fileExists(atPath: file.path) {
         FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
     }
-    guard let handle = try? FileHandle(forWritingTo: file) else { return }
+    return file
+}()
+func diagnostic(_ message: String) {
+    guard let handle = try? FileHandle(forWritingTo: diagnosticsFile) else { return }
     defer { try? handle.close() }
     _ = try? handle.seekToEnd()
     try? handle.write(contentsOf: Data("\(Date().ISO8601Format()) \(message)\n".utf8))
@@ -24,7 +24,8 @@ func diagnostic(_ message: String) {
 
 // Draws the newest frame as large as the view allows, keeping its shape.
 // The source is small (about 332 x 568 pixels), so it is enlarged with a
-// Lanczos filter and lightly sharpened instead of plain smoothing.
+// Lanczos filter. A modest enlargement is lightly sharpened; a large one (the
+// small call panel at full height) is not, because sharpening shows its pixels.
 final class PictureView: MTKView, MTKViewDelegate {
     private let commands: MTLCommandQueue
     private let context: CIContext
@@ -62,7 +63,7 @@ final class PictureView: MTKView, MTKViewDelegate {
         if let image, image.extent.width > 0, image.extent.height > 0 {
             let scale = min(size.width / image.extent.width, size.height / image.extent.height)
             var scaled = image.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale, kCIInputAspectRatioKey: 1.0])
-            if scale > 1 { scaled = scaled.applyingFilter("CISharpenLuminance", parameters: [kCIInputSharpnessKey: 0.4]) }
+            if scale > 1, scale < 2.2 { scaled = scaled.applyingFilter("CISharpenLuminance", parameters: [kCIInputSharpnessKey: 0.4]) }
             scaled = scaled.transformed(by: CGAffineTransform(translationX: ((size.width - scaled.extent.width) / 2 - scaled.extent.minX).rounded(),
                                                               y: ((size.height - scaled.extent.height) / 2 - scaled.extent.minY).rounded()))
             output = scaled.composited(over: output)
@@ -119,6 +120,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var statusItem: NSStatusItem!
     private let muse = MuseCall()
     private var timer: Timer?
+    private var asideTimer: Timer?
 
     private let pictureShape = NSSize(width: 332, height: 568)   // Muse's large avatar picture
     private var unfilledFrame: NSRect?
@@ -207,9 +209,7 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
         for (button, action) in [(microphone, #selector(toggleMicrophone)), (speaker, #selector(toggleSpeaker)), (endCall, #selector(endSourceCall))] {
             button.target = self
             button.action = action
-            button.isBordered = false
-            button.wantsLayer = true
-            button.layer?.backgroundColor = NSColor(white: 0.94, alpha: 1).cgColor
+            button.isTransparent = true      // Muse's own control shows through, with its true state
             button.isHidden = true
             container.addSubview(button)
         }
@@ -218,6 +218,12 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
         diagnostic("viewer launched")
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        // Muse slides its avatar back in each time it becomes the active app.
+        asideTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            guard let self, self.tuckAvatar, self.shown, self.receiving else { return }
+            self.call = self.muse.state()
+            self.tuck()
+        }
         show()
     }
 
@@ -355,23 +361,16 @@ final class ViewerController: NSObject, NSApplicationDelegate, NSWindowDelegate,
             permission.sizeToFit()
             permission.frame.origin = NSPoint(x: (bounds.width - permission.frame.width) / 2, y: message.frame.minY - permission.frame.height - 12)
         }
-        // The three buttons sit exactly over Muse's own controls in the picture.
+        // Three invisible click targets sit exactly over Muse's own controls,
+        // which are part of the picture.
         let rect = picture.pictureRect
-        for (button, control, normal, off) in [
-            (microphone, call?.microphone, "mic.fill", "mic.slash.fill"),
-            (speaker, call?.speaker, "speaker.wave.2.fill", "speaker.slash.fill"),
-            (endCall, call?.endCall, "phone.down.fill", "phone.down.fill")
-        ] {
-            guard live, let call, let control, rect.width > 0, call.card.width > 0 else { button.isHidden = true; continue }
+        for (button, control) in [(microphone, call?.microphone), (speaker, call?.speaker), (endCall, call?.endCall)] {
+            guard live, let call, let control, rect.width > 0, call.card.width > 0, call.large == capturedLarge else { button.isHidden = true; continue }
             let zoom = rect.width / call.card.width
-            let side = max(24, min(64, control.frame.height * zoom))
+            let side = control.frame.height * zoom
             let x = rect.minX + (control.frame.midX - call.card.minX) * zoom
             let y = rect.maxY - (control.frame.midY - call.card.minY) * zoom
             button.frame = NSRect(x: x - side / 2, y: y - side / 2, width: side, height: side)
-            button.layer?.cornerRadius = side / 2
-            let isOff = control.label.lowercased().hasPrefix("unmute")
-            button.image = NSImage(systemSymbolName: isOff ? off : normal, accessibilityDescription: control.label)
-            button.contentTintColor = button === endCall || isOff ? .systemRed : .darkGray
             button.toolTip = control.label
             button.setAccessibilityLabel(control.label)
             button.isHidden = false

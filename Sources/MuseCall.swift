@@ -86,7 +86,8 @@ final class MuseCall {
             let controls = [result.microphone, result.speaker, result.endCall].compactMap { $0?.frame }
             guard windowFrame.height >= 250, let end = result.endCall?.frame, controls.count == 3 else { return nil }
             let x = windowFrame.minX + 8
-            let card = CGRect(x: x, y: windowFrame.minY + 8, width: end.maxX + 8 - x, height: end.maxY + 6 - windowFrame.minY - 8)
+            // The picture is 144 points wide whether Muse shows three controls or four.
+            let card = CGRect(x: x, y: windowFrame.minY + 8, width: 144, height: end.maxY + 6 - windowFrame.minY - 8)
             guard windowFrame.contains(card), card.width > 60, card.height > 100 else { return nil }
             result.card = card
         } else if !foundCard { return nil }
